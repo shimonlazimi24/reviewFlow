@@ -74,19 +74,46 @@ export function registerSlackHandlers(app: App) {
   });
 
   // List my assignments
-  app.command('/my-reviews', async ({ ack, command, client }) => {
+  app.command('/my-reviews', async ({ ack, command, client, respond }) => {
     await ack();
 
     try {
       const userId = command.user_id;
+      const channelId = command.channel_id;
       const assignments = db.getAssignmentsBySlackUser(userId);
 
+      // Helper to send response (works in DMs and channels)
+      const sendResponse = async (text: string) => {
+        try {
+          // Try ephemeral first (works in channels)
+          if (channelId && channelId.startsWith('C')) {
+            await client.chat.postEphemeral({
+              channel: channelId,
+              user: userId,
+              text
+            });
+          } else {
+            // Use respond for DMs or if ephemeral fails
+            await respond({
+              text,
+              response_type: 'ephemeral'
+            });
+          }
+        } catch (err: any) {
+          // Fallback to respond if ephemeral fails
+          if (err.data?.error === 'not_in_channel' || err.code === 'slack_webapi_platform_error') {
+            await respond({
+              text,
+              response_type: 'ephemeral'
+            });
+          } else {
+            throw err;
+          }
+        }
+      };
+
       if (assignments.length === 0) {
-        await client.chat.postEphemeral({
-          channel: command.channel_id,
-          user: userId,
-          text: '✅ You have no pending reviews!'
-        });
+        await sendResponse('✅ You have no pending reviews!');
         return;
       }
 
@@ -95,11 +122,7 @@ export function registerSlackHandlers(app: App) {
         .filter((pr): pr is NonNullable<typeof pr> => pr !== undefined && pr.status === 'OPEN');
 
       if (prs.length === 0) {
-        await client.chat.postEphemeral({
-          channel: command.channel_id,
-          user: userId,
-          text: '✅ You have no pending reviews!'
-        });
+        await sendResponse('✅ You have no pending reviews!');
         return;
       }
 
@@ -107,18 +130,17 @@ export function registerSlackHandlers(app: App) {
         .map(pr => `• <${pr.url}|PR #${pr.number}: ${pr.title}> (${pr.repoFullName})`)
         .join('\n');
 
-      await client.chat.postEphemeral({
-        channel: command.channel_id,
-        user: userId,
-        text: `📋 *Your Pending Reviews (${prs.length}):*\n\n${text}`
-      });
+      await sendResponse(`📋 *Your Pending Reviews (${prs.length}):*\n\n${text}`);
     } catch (error) {
       console.error('Error in /my-reviews command:', error);
-      await client.chat.postEphemeral({
-        channel: command.channel_id,
-        user: command.user_id,
-        text: '❌ An error occurred. Please try again.'
-      });
+      try {
+        await respond({
+          text: '❌ An error occurred. Please try again.',
+          response_type: 'ephemeral'
+        });
+      } catch (respondError) {
+        console.error('Failed to send error response:', respondError);
+      }
     }
   });
 
