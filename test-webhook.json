@@ -1,0 +1,25 @@
+{
+  "action": "opened",
+  "pull_request": {
+    "number": 123,
+    "title": "Test PR - Add new feature",
+    "html_url": "https://github.com/user/repo/pull/123",
+    "user": {
+      "login": "testuser"
+    },
+    "head": {
+      "ref": "feature/PROJ-123-test-branch"
+    },
+    "labels": [
+      {"name": "frontend"}
+    ],
+    "additions": 50,
+    "deletions": 10,
+    "merged": false
+  },
+  "repository": {
+    "full_name": "user/repo"
+  }
+}
+
+
