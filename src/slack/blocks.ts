@@ -119,14 +119,27 @@ export function buildPrMessageBlocks(args: BuildPrMessageBlocksArgs): (Block | K
     // Add action buttons for each reviewer
     const actions: any[] = [];
     for (const reviewer of reviewers) {
+      // Add "Take Review" button (only if status is ASSIGNED)
       actions.push({
         type: 'button',
         text: {
           type: 'plain_text',
-          text: `✅ ${reviewer.githubUsernames[0] || 'Done'}`
+          text: `📋 Start Review`
         },
         style: 'primary',
-        value: `${pr.id}`,
+        value: `${pr.id}|${reviewer.id}`,
+        action_id: 'take_review'
+      });
+      
+      // Add "Mark Done" button
+      actions.push({
+        type: 'button',
+        text: {
+          type: 'plain_text',
+          text: `✅ Done`
+        },
+        style: 'primary',
+        value: `${pr.id}|${reviewer.id}`,
         action_id: 'mark_done'
       });
     }

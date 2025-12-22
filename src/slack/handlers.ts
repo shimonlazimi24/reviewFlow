@@ -37,18 +37,109 @@ export function registerSlackHandlers(app: App) {
     }
   };
 
-  // Mark assignment as done
-  app.action('mark_done', async ({ ack, body, client }) => {
+  // Take review (update status to IN_PROGRESS)
+  app.action('take_review', async ({ ack, body, client, respond }) => {
     await ack();
 
     try {
       const actionBody = body as BlockAction<ButtonAction>;
       const userId = actionBody.user?.id;
-      const prId = actionBody.actions?.[0]?.value;
+      const value = actionBody.actions?.[0]?.value;
       const channelId = actionBody.channel?.id;
 
-      if (!userId || !prId || !channelId) {
+      if (!userId || !value || !channelId) {
         throw new Error('Missing required fields in action');
+      }
+
+      const [prId, memberId] = value.split('|');
+      if (!prId) {
+        throw new Error('Invalid PR ID in action value');
+      }
+
+      // Get assignments for this PR
+      const assignments = await db.getAssignmentsForPr(prId);
+      const assignment = assignments.find(
+        (a: Assignment) => a.slackUserId === userId && a.status !== 'DONE'
+      );
+
+      if (!assignment) {
+        await sendResponse(client, channelId, userId, '❌ You are not assigned to this PR or review is already completed.', respond);
+        return;
+      }
+
+      if (assignment.status === 'IN_PROGRESS') {
+        await sendResponse(client, channelId, userId, 'ℹ️ You have already started reviewing this PR.', respond);
+        return;
+      }
+
+      // Update status to IN_PROGRESS
+      const updated = await db.updateAssignmentStatus(assignment.id, 'IN_PROGRESS');
+
+      if (updated) {
+        // Update Slack message
+        const pr = await db.getPr(prId);
+        if (pr && pr.slackMessageTs) {
+          const updatedAssignments = await db.getAssignmentsForPr(prId);
+          const reviewerPromises = updatedAssignments
+            .filter((a: Assignment) => !a.completedAt)
+            .map((a: Assignment) => db.getMember(a.memberId));
+          const reviewerResults = await Promise.all(reviewerPromises);
+          const reviewers = reviewerResults.filter((m): m is NonNullable<typeof m> => m !== undefined);
+
+          let jiraInfo = undefined;
+          if (pr.jiraIssueKey && jiraEnabled) {
+            try {
+              const jira = new JiraService();
+              jiraInfo = await jira.getIssueMinimal(pr.jiraIssueKey);
+            } catch (e) {
+              console.warn('Failed to fetch Jira info for take review:', e);
+            }
+          }
+
+          const blocks = buildPrMessageBlocks({ pr, reviewers, jira: jiraInfo });
+
+          try {
+            await client.chat.update({
+              channel: pr.slackChannelId,
+              ts: pr.slackMessageTs,
+              text: `PR #${pr.number}: ${pr.title}`,
+              blocks
+            });
+          } catch (updateError) {
+            console.warn('Failed to update Slack message:', updateError);
+          }
+        }
+
+        await sendResponse(client, channelId, userId, '🔄 Review started! Status updated to IN_PROGRESS.', respond);
+      } else {
+        await sendResponse(client, channelId, userId, '❌ Failed to start review. Please try again.', respond);
+      }
+    } catch (error) {
+      console.error('Error in take_review handler:', error);
+      const actionBody = body as BlockAction;
+      if (actionBody.user?.id && actionBody.channel?.id) {
+        await sendResponse(client, actionBody.channel.id, actionBody.user.id, '❌ An error occurred. Please try again.', respond);
+      }
+    }
+  });
+
+  // Mark assignment as done
+  app.action('mark_done', async ({ ack, body, client, respond }) => {
+    await ack();
+
+    try {
+      const actionBody = body as BlockAction<ButtonAction>;
+      const userId = actionBody.user?.id;
+      const value = actionBody.actions?.[0]?.value;
+      const channelId = actionBody.channel?.id;
+
+      if (!userId || !value || !channelId) {
+        throw new Error('Missing required fields in action');
+      }
+
+      const [prId, memberId] = value.split('|');
+      if (!prId) {
+        throw new Error('Invalid PR ID in action value');
       }
 
       const ok = await db.markAssignmentDoneBySlackUser(prId, userId);
