@@ -58,7 +58,13 @@ export const env = {
 
   // Application
   NODE_ENV: opt('NODE_ENV', 'development'),
-  APP_NAME: opt('APP_NAME', 'reviewflow')
+  APP_NAME: opt('APP_NAME', 'reviewflow'),
+
+  // Reminders
+  REMINDER_ENABLED: optBool('REMINDER_ENABLED', true),
+  REMINDER_FIRST_HOURS: optNum('REMINDER_FIRST_HOURS', 24), // First reminder after 24 hours
+  REMINDER_ESCALATION_HOURS: optNum('REMINDER_ESCALATION_HOURS', 48), // Escalate to channel after 48 hours
+  REMINDER_CHECK_INTERVAL_MINUTES: optNum('REMINDER_CHECK_INTERVAL_MINUTES', 60) // Check every hour
 };
 
 export const jiraEnabled =

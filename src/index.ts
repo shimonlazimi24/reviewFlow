@@ -9,6 +9,7 @@ import { createDb } from './db/memoryDb';
 import { logger } from './utils/logger';
 import { formatErrorResponse, asyncHandler } from './utils/errors';
 import { githubWebhookValidator } from './utils/githubWebhook';
+import { ReminderService } from './services/reminderService';
 
 async function main() {
   try {
@@ -41,6 +42,23 @@ async function main() {
     });
 
     registerSlackHandlers(slackApp);
+
+    // Start reminder service
+    const reminderService = new ReminderService(slackApp);
+    reminderService.start();
+
+    // Graceful shutdown
+    process.on('SIGTERM', () => {
+      logger.info('SIGTERM received, shutting down gracefully...');
+      reminderService.stop();
+      process.exit(0);
+    });
+
+    process.on('SIGINT', () => {
+      logger.info('SIGINT received, shutting down gracefully...');
+      reminderService.stop();
+      process.exit(0);
+    });
 
     const app = receiver.app as express.Express;
     
