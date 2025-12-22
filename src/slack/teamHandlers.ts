@@ -39,6 +39,8 @@ export function registerTeamHandlers(app: App) {
     const channelId = command.channel_id;
 
     try {
+      // Require admin access
+      await requireAdmin(userId, client);
       const args = command.text?.trim().split(' ') || [];
       if (args.length < 2) {
         await sendResponse(client, channelId, userId, 'Usage: `/create-team <team-name> <slack-channel-id>`\n\nExample: `/create-team "Frontend Team" C0123456789`', respond);
@@ -47,6 +49,14 @@ export function registerTeamHandlers(app: App) {
 
       const [teamName, ...channelParts] = args;
       const slackChannelId = channelParts.join(' ');
+
+      // Check team limit
+      const teams = await db.listTeams();
+      const limitCheck = await checkLimit('maxTeams', teams.length);
+      if (!limitCheck.allowed) {
+        await sendResponse(client, channelId, userId, `❌ Team limit exceeded. You have ${limitCheck.current} teams, maximum allowed: ${limitCheck.limit}.\n\nUpgrade to premium for unlimited teams.`, respond);
+        return;
+      }
 
       const teamId = `team_${Date.now()}_${Math.random().toString(16).slice(2)}`;
       const team: Team = {
@@ -101,6 +111,8 @@ export function registerTeamHandlers(app: App) {
     const channelId = command.channel_id;
 
     try {
+      // Require admin access
+      await requireAdmin(userId, client);
       const args = command.text?.trim().split(' ') || [];
       if (args.length < 2) {
         await sendResponse(client, channelId, userId, 'Usage: `/map-repo <repo-full-name> <team-id>`\n\nExample: `/map-repo org/frontend-repo team_1234567890`\n\nUse `/list-teams` to find team IDs.', respond);
@@ -183,6 +195,8 @@ export function registerTeamHandlers(app: App) {
     const channelId = command.channel_id;
 
     try {
+      // Require admin access
+      await requireAdmin(userId, client);
       const args = command.text?.trim();
       if (!args) {
         await sendResponse(client, channelId, userId, 'Usage: `/unmap-repo <repo-full-name>`\n\nExample: `/unmap-repo org/frontend-repo`', respond);
@@ -211,6 +225,8 @@ export function registerTeamHandlers(app: App) {
     const channelId = command.channel_id;
 
     try {
+      // Require admin access
+      await requireAdmin(userId, client);
       const args = command.text?.trim().split(' ') || [];
       if (args.length < 2) {
         await sendResponse(client, channelId, userId, 'Usage: `/assign-to-team <slack-user-id> <team-id>`\n\nExample: `/assign-to-team U01234567 team_1234567890`\n\nUse `/list-teams` to find team IDs.', respond);

@@ -7,6 +7,8 @@ import { pickReviewers } from '../services/assignmentService';
 import { formatWaitingTime, calculateWaitingTime } from '../utils/time';
 import { buildSettingsModal, buildAddMemberModal, buildEditMemberModal } from './modals';
 import { registerTeamHandlers } from './teamHandlers';
+import { requireAdmin } from '../utils/permissions';
+import { logger } from '../utils/logger';
 
 export function registerSlackHandlers(app: App) {
   // Register team management handlers

@@ -10,11 +10,17 @@ import { logger } from './utils/logger';
 import { formatErrorResponse, asyncHandler } from './utils/errors';
 import { githubWebhookValidator } from './utils/githubWebhook';
 import { ReminderService } from './services/reminderService';
+import { initAdminConfig } from './utils/permissions';
+import { initFeatureFlags } from './services/featureFlags';
 
 async function main() {
   try {
     // Validate environment first (fail fast)
     validateEnvironment();
+    // Initialize admin configuration
+    initAdminConfig();
+    // Initialize feature flags
+    initFeatureFlags();
     // Initialize database
     let db: any;
     if (useDatabase && env.DATABASE_URL) {
