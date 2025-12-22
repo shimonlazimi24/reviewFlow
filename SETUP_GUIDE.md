@@ -448,8 +448,9 @@ After setup, use these commands to get started:
 # Set ADMIN_SLACK_USER_IDS in environment variables
 
 # 2. Add team members
-/add-reviewer U01234567 alice FE
-/add-reviewer U09876543 bob BE
+/add-reviewer U01234567 alice FE      # Frontend developer
+/add-reviewer U09876543 bob BE        # Backend developer
+/add-reviewer U11111111 charlie FS    # Full Stack developer (can review anything!)
 
 # 3. Create a team (optional)
 /create-team "Frontend Team" C0123456789
@@ -462,6 +463,19 @@ After setup, use these commands to get started:
 /cr my
 /metrics
 ```
+
+### About Roles
+
+- **FE (Frontend)**: Can review frontend PRs only
+- **BE (Backend)**: Can review backend PRs only  
+- **FS (Full Stack)**: Can review **ANY** PR (frontend, backend, or mixed)
+
+**Full Stack developers are special** - they can review any type of PR, making them perfect for:
+- Senior developers
+- Team leads
+- Generalists who work across the stack
+
+See `FULL_STACK_EXPLANATION.md` for detailed information.
 
 ---
 
