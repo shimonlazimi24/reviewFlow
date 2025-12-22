@@ -4,7 +4,7 @@ import { buildPrMessageBlocks } from './blocks';
 import { JiraService } from '../services/jiraService';
 import { env, jiraEnabled } from '../config/env';
 import { pickReviewers } from '../services/assignmentService';
-import { formatWaitingTime, calculateWaitingTime } from '../utils/time';
+import { formatWaitingTime, calculateWaitingTime, formatDuration } from '../utils/time';
 import { buildSettingsModal, buildAddMemberModal, buildEditMemberModal } from './modals';
 import { registerTeamHandlers } from './teamHandlers';
 import { requireAdmin } from '../utils/permissions';
