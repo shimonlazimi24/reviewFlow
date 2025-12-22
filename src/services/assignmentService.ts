@@ -15,28 +15,34 @@ export function inferStackFromLabels(labels: GitHubLabel[] | any[]): Stack {
   return 'MIXED'; // default
 }
 
-export function pickReviewers(args: {
+export async function pickReviewers(args: {
   stack: Stack;
   requiredReviewers: number;
   authorGithub: string;
-}): Member[] {
+}): Promise<Member[]> {
   const { stack, requiredReviewers, authorGithub } = args;
-  const members = db.listMembers();
+  const members = await db.listMembers();
 
-  const candidates = members
-    .filter(m => m.isActive)
-    .filter(m => !m.githubUsernames.includes(authorGithub)) // לא להקצות למחבר
-    .filter(m => {
-      if (stack === 'MIXED') return true;
-      if (m.roles.includes('FS')) return true;
-      return m.roles.includes(stack);
-    })
-    .map(m => ({
-      m,
-      open: db.getOpenAssignmentsCount(m.id),
-      score: db.getOpenAssignmentsCount(m.id) / Math.max(0.1, m.weight)
-    }))
-    .sort((a, b) => a.score - b.score);
+  const candidates = await Promise.all(
+    members
+      .filter(m => m.isActive)
+      .filter(m => !m.githubUsernames.includes(authorGithub)) // לא להקצות למחבר
+      .filter(m => {
+        if (stack === 'MIXED') return true;
+        if (m.roles.includes('FS')) return true;
+        return m.roles.includes(stack);
+      })
+      .map(async m => {
+        const open = await db.getOpenAssignmentsCount(m.id);
+        return {
+          m,
+          open,
+          score: open / Math.max(0.1, m.weight)
+        };
+      })
+  );
+
+  candidates.sort((a, b) => a.score - b.score);
 
   return candidates.slice(0, requiredReviewers).map(x => x.m);
 }

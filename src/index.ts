@@ -1,12 +1,28 @@
 import express from 'express';
 import bodyParser from 'body-parser';
 import { App, ExpressReceiver } from '@slack/bolt';
-import { env } from './config/env';
+import { env, useDatabase } from './config/env';
 import { registerSlackHandlers } from './slack/handlers';
 import { githubWebhookHandlerFactory } from './github/webhookHandler';
+import { createDb } from './db/memoryDb';
 
 async function main() {
   try {
+    // Initialize database
+    let db: any;
+    if (useDatabase && env.DATABASE_URL) {
+      db = createDb(true, env.DATABASE_URL);
+      await db.init();
+      console.log('✅ Connected to PostgreSQL database');
+    } else {
+      db = createDb(false);
+      console.log('⚠️  Using in-memory database (data will be lost on restart)');
+      console.log('💡 To enable persistence, add DATABASE_URL environment variable');
+    }
+
+    // Set global db instance
+    const memoryDbModule = require('./db/memoryDb');
+    memoryDbModule.db = db;
     const receiver = new ExpressReceiver({ 
       signingSecret: env.SLACK_SIGNING_SECRET,
       processBeforeResponse: true

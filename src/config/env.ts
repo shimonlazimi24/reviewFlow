@@ -25,9 +25,14 @@ export const env = {
   JIRA_MERGE_TRANSITION_NAME: process.env.JIRA_MERGE_TRANSITION_NAME ?? 'Done',
   JIRA_PROJECT_KEY: process.env.JIRA_PROJECT_KEY ?? '',
   JIRA_ISSUE_TYPE: process.env.JIRA_ISSUE_TYPE ?? 'Task',
-  JIRA_DEFAULT_SPRINT_FIELD: process.env.JIRA_DEFAULT_SPRINT_FIELD ?? 'customfield_10020' // Default sprint field ID
+  JIRA_DEFAULT_SPRINT_FIELD: process.env.JIRA_DEFAULT_SPRINT_FIELD ?? 'customfield_10020', // Default sprint field ID
+
+  // Database
+  DATABASE_URL: process.env.DATABASE_URL ?? '' // PostgreSQL connection string (Railway provides this)
 };
 
 export const jiraEnabled =
   Boolean(env.JIRA_BASE_URL && env.JIRA_EMAIL && env.JIRA_API_TOKEN);
+
+export const useDatabase = Boolean(env.DATABASE_URL);
 

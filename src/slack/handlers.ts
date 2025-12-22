@@ -19,20 +19,18 @@ export function registerSlackHandlers(app: App) {
         throw new Error('Missing required fields in action');
       }
 
-      const ok = db.markAssignmentDoneBySlackUser(prId, userId);
+      const ok = await db.markAssignmentDoneBySlackUser(prId, userId);
 
       if (ok) {
         // Update the message to reflect the change
-        const pr = db.getPr(prId);
+        const pr = await db.getPr(prId);
         if (pr && pr.slackMessageTs) {
-          const assignments = db.getAssignmentsForPr(prId);
-          const reviewers = assignments
+          const assignments = await db.getAssignmentsForPr(prId);
+          const reviewerPromises = assignments
             .filter(a => !a.completedAt)
-            .map(a => {
-              const member = db.getMember(a.memberId);
-              return member;
-            })
-            .filter((m): m is NonNullable<typeof m> => m !== undefined);
+            .map(a => db.getMember(a.memberId));
+          const reviewerResults = await Promise.all(reviewerPromises);
+          const reviewers = reviewerResults.filter((m): m is NonNullable<typeof m> => m !== undefined);
 
           const blocks = buildPrMessageBlocks({ pr, reviewers, jira: undefined });
           
@@ -80,7 +78,7 @@ export function registerSlackHandlers(app: App) {
     try {
       const userId = command.user_id;
       const channelId = command.channel_id;
-      const assignments = db.getAssignmentsBySlackUser(userId);
+      const assignments = await db.getAssignmentsBySlackUser(userId);
 
       // Helper to send response (works in DMs and channels)
       const sendResponse = async (text: string) => {
@@ -117,9 +115,9 @@ export function registerSlackHandlers(app: App) {
         return;
       }
 
-      const prs = assignments
-        .map(a => db.getPr(a.prId))
-        .filter((pr): pr is NonNullable<typeof pr> => pr !== undefined && pr.status === 'OPEN');
+      const prsPromises = assignments.map(a => db.getPr(a.prId));
+      const prsResults = await Promise.all(prsPromises);
+      const prs = prsResults.filter((pr): pr is NonNullable<typeof pr> => pr !== undefined && pr.status === 'OPEN');
 
       if (prs.length === 0) {
         await sendResponse('✅ You have no pending reviews!');
@@ -170,7 +168,7 @@ export function registerSlackHandlers(app: App) {
         throw new Error('Missing required fields in action');
       }
 
-      const pr = db.getPr(prId);
+      const pr = await db.getPr(prId);
       if (!pr) {
         throw new Error('PR not found');
       }
@@ -219,21 +217,19 @@ export function registerSlackHandlers(app: App) {
       });
 
       // Link the issue to the PR
-      db.updatePr(prId, { jiraIssueKey: issue.key });
+      await db.updatePr(prId, { jiraIssueKey: issue.key });
 
       // Add comment to Jira linking back to PR
       await jira.addComment(issue.key, `Linked PR: ${pr.url} (${pr.repoFullName} #${pr.number})`);
 
       // Update the Slack message
       if (pr.slackMessageTs) {
-        const assignments = db.getAssignmentsForPr(prId);
-        const reviewers = assignments
+        const assignments = await db.getAssignmentsForPr(prId);
+        const reviewerPromises = assignments
           .filter(a => !a.completedAt)
-          .map(a => {
-            const member = db.getMember(a.memberId);
-            return member;
-          })
-          .filter((m): m is NonNullable<typeof m> => m !== undefined);
+          .map(a => db.getMember(a.memberId));
+        const reviewerResults = await Promise.all(reviewerPromises);
+        const reviewers = reviewerResults.filter((m): m is NonNullable<typeof m> => m !== undefined);
 
         const blocks = buildPrMessageBlocks({ pr: { ...pr, jiraIssueKey: issue.key }, reviewers, jira: issue });
 
@@ -361,11 +357,12 @@ export function registerSlackHandlers(app: App) {
       }
 
       // Check if member already exists
-      const existing = db.listMembers().find(m => m.slackUserId === slackUserId);
+      const members = await db.listMembers();
+      const existing = members.find(m => m.slackUserId === slackUserId);
       
       if (existing) {
         // Update existing member
-        db.updateMember(existing.id, {
+        await db.updateMember(existing.id, {
           githubUsernames: [...new Set([...existing.githubUsernames, githubUsername])],
           roles: existing.roles.includes(role as any) ? existing.roles : [...existing.roles, role as any]
         });
@@ -376,7 +373,7 @@ export function registerSlackHandlers(app: App) {
       } else {
         // Create new member
         const memberId = `member_${slackUserId}`;
-        db.addMember({
+        await db.addMember({
           id: memberId,
           slackUserId,
           githubUsernames: [githubUsername],
@@ -403,7 +400,7 @@ export function registerSlackHandlers(app: App) {
     await ack();
 
     try {
-      const members = db.listMembers();
+      const members = await db.listMembers();
       
       if (members.length === 0) {
         await respond({
@@ -451,7 +448,7 @@ export function registerSlackHandlers(app: App) {
         return;
       }
 
-      const members = db.listMembers();
+      const members = await db.listMembers();
       const member = members.find(m => m.slackUserId === slackUserId);
       
       if (!member) {
@@ -463,7 +460,7 @@ export function registerSlackHandlers(app: App) {
       }
 
       // Deactivate instead of deleting (preserve history)
-      db.updateMember(member.id, { isActive: false });
+      await db.updateMember(member.id, { isActive: false });
       
       await respond({
         text: `✅ Removed reviewer: <@${slackUserId}>`,
@@ -505,7 +502,7 @@ export function registerSlackHandlers(app: App) {
         return;
       }
 
-      const members = db.listMembers();
+      const members = await db.listMembers();
       const member = members.find(m => m.slackUserId === slackUserId);
       
       if (!member) {
@@ -516,7 +513,7 @@ export function registerSlackHandlers(app: App) {
         return;
       }
 
-      db.updateMember(member.id, { weight });
+      await db.updateMember(member.id, { weight });
       
       await respond({
         text: `✅ Set weight for <@${slackUserId}> to ${weight}`,

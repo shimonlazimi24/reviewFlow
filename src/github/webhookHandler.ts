@@ -65,9 +65,9 @@ export function githubWebhookHandlerFactory(args: { slackApp: App }) {
 
       // opened / ready_for_review / reopened
       if (['opened', 'ready_for_review', 'reopened'].includes(action)) {
-        const existing = db.findPr(repoFullName, number);
+        const existing = await db.findPr(repoFullName, number);
 
-        const record = db.upsertPr({
+        const record = await db.upsertPr({
           id: existing?.id ?? prId(),
           repoFullName,
           number,
@@ -85,26 +85,24 @@ export function githubWebhookHandlerFactory(args: { slackApp: App }) {
 
         // Only create new assignments if this is a new PR
         if (!existing) {
-          const reviewers = pickReviewers({
+          const reviewers = await pickReviewers({
             stack: record.stack === 'MIXED' ? 'MIXED' : record.stack,
             requiredReviewers: 1,
             authorGithub: record.authorGithub
           });
 
           if (reviewers.length > 0) {
-            db.createAssignments(record.id, reviewers.map(r => r.id));
+            await db.createAssignments(record.id, reviewers.map(r => r.id));
           }
         }
 
         // Get current assignments for display
-        const assignments = db.getAssignmentsForPr(record.id);
-        const reviewers = assignments
+        const assignments = await db.getAssignmentsForPr(record.id);
+        const reviewerPromises = assignments
           .filter(a => !a.completedAt)
-          .map(a => {
-            const member = db.getMember(a.memberId);
-            return member;
-          })
-          .filter((m): m is NonNullable<typeof m> => m !== undefined);
+          .map(a => db.getMember(a.memberId));
+        const reviewerResults = await Promise.all(reviewerPromises);
+        const reviewers = reviewerResults.filter((m): m is NonNullable<typeof m> => m !== undefined);
 
         // Jira enrichment + side effects
         let jiraInfo = undefined;
@@ -143,7 +141,7 @@ export function githubWebhookHandlerFactory(args: { slackApp: App }) {
               blocks
             });
             if (slackRes.ts) {
-              db.updatePr(record.id, { slackMessageTs: slackRes.ts, slackChannelId: env.SLACK_DEFAULT_CHANNEL_ID });
+              await db.updatePr(record.id, { slackMessageTs: slackRes.ts, slackChannelId: env.SLACK_DEFAULT_CHANNEL_ID });
             }
           }
         } else {
@@ -155,7 +153,7 @@ export function githubWebhookHandlerFactory(args: { slackApp: App }) {
           });
 
           if (slackRes.ts) {
-            db.updatePr(record.id, { slackMessageTs: slackRes.ts, slackChannelId: env.SLACK_DEFAULT_CHANNEL_ID });
+            await db.updatePr(record.id, { slackMessageTs: slackRes.ts, slackChannelId: env.SLACK_DEFAULT_CHANNEL_ID });
           }
         }
 
@@ -166,17 +164,17 @@ export function githubWebhookHandlerFactory(args: { slackApp: App }) {
       // closed (check merged)
       if (action === 'closed') {
         const merged = Boolean(pr.merged);
-        const existing = db.findPr(repoFullName, number);
+        const existing = await db.findPr(repoFullName, number);
         if (existing) {
-          db.updatePr(existing.id, { status: merged ? 'MERGED' : 'CLOSED' });
+          await db.updatePr(existing.id, { status: merged ? 'MERGED' : 'CLOSED' });
 
           // Update Slack message if it exists
           if (existing.slackMessageTs) {
             try {
-              const assignments = db.getAssignmentsForPr(existing.id);
-              const reviewers = assignments
-                .map(a => db.getMember(a.memberId))
-                .filter((m): m is NonNullable<typeof m> => m !== undefined);
+              const assignments = await db.getAssignmentsForPr(existing.id);
+              const reviewerPromises = assignments.map(a => db.getMember(a.memberId));
+              const reviewerResults = await Promise.all(reviewerPromises);
+              const reviewers = reviewerResults.filter((m): m is NonNullable<typeof m> => m !== undefined);
 
               const blocks = buildPrMessageBlocks({ pr: { ...existing, status: merged ? 'MERGED' : 'CLOSED' }, reviewers, jira: undefined });
               
