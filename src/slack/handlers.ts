@@ -9,6 +9,7 @@ import { buildSettingsModal, buildAddMemberModal, buildEditMemberModal } from '.
 import { registerTeamHandlers } from './teamHandlers';
 import { requireAdmin } from '../utils/permissions';
 import { logger } from '../utils/logger';
+import { AnalyticsService } from '../services/analyticsService';
 
 export function registerSlackHandlers(app: App) {
   // Register team management handlers
