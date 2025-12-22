@@ -49,7 +49,7 @@ export function buildPrMessageBlocks(args: BuildPrMessageBlocksArgs): (Block | K
         },
         {
           type: 'mrkdwn',
-          text: `*Size:*\n${pr.size}`
+          text: `*Size:*\n${pr.size}${pr.totalChanges ? ` (${pr.totalChanges} lines)` : ''}`
         },
         {
           type: 'mrkdwn',
@@ -57,6 +57,24 @@ export function buildPrMessageBlocks(args: BuildPrMessageBlocksArgs): (Block | K
         }
       ]
     },
+    // Add detailed metadata if available
+    ...(pr.changedFiles || pr.additions || pr.deletions ? [{
+      type: 'section',
+      fields: [
+        ...(pr.additions ? [{
+          type: 'mrkdwn',
+          text: `*Additions:*\n+${pr.additions}`
+        }] : []),
+        ...(pr.deletions ? [{
+          type: 'mrkdwn',
+          text: `*Deletions:*\n-${pr.deletions}`
+        }] : []),
+        ...(pr.changedFiles ? [{
+          type: 'mrkdwn',
+          text: `*Files Changed:*\n${pr.changedFiles}`
+        }] : [])
+      ].filter(Boolean)
+    }] : []),
     {
       type: 'section',
       text: {

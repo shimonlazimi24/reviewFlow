@@ -18,6 +18,9 @@ interface GitHubWebhookPayload {
     head?: { ref?: string };
     labels?: Array<{ name?: string }>;
     merged?: boolean;
+    additions?: number;
+    deletions?: number;
+    changed_files?: number;
   };
   repository?: {
     full_name?: string;

@@ -29,6 +29,11 @@ export interface PrRecord {
   jiraIssueKey?: string;
   slackChannelId: string;
   slackMessageTs?: string;
+  // Enhanced metadata
+  additions?: number;
+  deletions?: number;
+  changedFiles?: number;
+  totalChanges?: number;
 }
 
 export type AssignmentStatus = 'ASSIGNED' | 'IN_PROGRESS' | 'DONE';

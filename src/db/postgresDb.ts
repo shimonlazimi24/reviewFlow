@@ -54,9 +54,27 @@ export class PostgresDb {
         jira_issue_key VARCHAR(255),
         slack_channel_id VARCHAR(255) NOT NULL,
         slack_message_ts VARCHAR(255),
+        additions INTEGER,
+        deletions INTEGER,
+        changed_files INTEGER,
+        total_changes INTEGER,
         updated_at TIMESTAMP DEFAULT NOW(),
         UNIQUE(repo_full_name, number)
       );
+      
+      -- Add metadata columns if they don't exist (for existing databases)
+      DO $$ 
+      BEGIN
+        IF NOT EXISTS (
+          SELECT 1 FROM information_schema.columns 
+          WHERE table_name = 'prs' AND column_name = 'additions'
+        ) THEN
+          ALTER TABLE prs ADD COLUMN additions INTEGER;
+          ALTER TABLE prs ADD COLUMN deletions INTEGER;
+          ALTER TABLE prs ADD COLUMN changed_files INTEGER;
+          ALTER TABLE prs ADD COLUMN total_changes INTEGER;
+        END IF;
+      END $$;
 
       CREATE TABLE IF NOT EXISTS assignments (
         id VARCHAR(255) PRIMARY KEY,
@@ -163,8 +181,8 @@ export class PostgresDb {
 
   async upsertPr(pr: PrRecord): Promise<PrRecord> {
     await this.pool.query(
-      `INSERT INTO prs (id, repo_full_name, number, title, url, author_github, created_at, status, size, stack, jira_issue_key, slack_channel_id, slack_message_ts)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+      `INSERT INTO prs (id, repo_full_name, number, title, url, author_github, created_at, status, size, stack, jira_issue_key, slack_channel_id, slack_message_ts, additions, deletions, changed_files, total_changes)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
        ON CONFLICT (repo_full_name, number) DO UPDATE SET
          title = $4,
          url = $5,
@@ -174,8 +192,16 @@ export class PostgresDb {
          jira_issue_key = $11,
          slack_channel_id = $12,
          slack_message_ts = $13,
+         additions = $14,
+         deletions = $15,
+         changed_files = $16,
+         total_changes = $17,
          updated_at = NOW()`,
-      [pr.id, pr.repoFullName, pr.number, pr.title, pr.url, pr.authorGithub, pr.createdAt, pr.status, pr.size, pr.stack, pr.jiraIssueKey || null, pr.slackChannelId, pr.slackMessageTs || null]
+      [
+        pr.id, pr.repoFullName, pr.number, pr.title, pr.url, pr.authorGithub, pr.createdAt,
+        pr.status, pr.size, pr.stack, pr.jiraIssueKey || null, pr.slackChannelId, pr.slackMessageTs || null,
+        pr.additions || null, pr.deletions || null, pr.changedFiles || null, pr.totalChanges || null
+      ]
     );
     return pr;
   }
@@ -341,7 +367,11 @@ export class PostgresDb {
       stack: row.stack as Stack,
       jiraIssueKey: row.jira_issue_key || undefined,
       slackChannelId: row.slack_channel_id,
-      slackMessageTs: row.slack_message_ts || undefined
+      slackMessageTs: row.slack_message_ts || undefined,
+      additions: row.additions || undefined,
+      deletions: row.deletions || undefined,
+      changedFiles: row.changed_files || undefined,
+      totalChanges: row.total_changes || undefined
     };
   }
 
