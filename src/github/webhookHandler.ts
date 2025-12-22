@@ -64,7 +64,8 @@ export function githubWebhookHandlerFactory(args: { slackApp: App }) {
               undefined;
 
             const stack = inferStackFromLabels(pr.labels ?? []);
-            const size = calcPrSizeFromGitHub(payload);
+            const prMetadata = calcPrSizeFromGitHub(payload);
+            const size = prMetadata.size;
 
       // opened / ready_for_review / reopened
       if (['opened', 'ready_for_review', 'reopened'].includes(action)) {
@@ -83,7 +84,12 @@ export function githubWebhookHandlerFactory(args: { slackApp: App }) {
           stack,
           jiraIssueKey: issueKey,
           slackChannelId: existing?.slackChannelId ?? env.SLACK_DEFAULT_CHANNEL_ID,
-          slackMessageTs: existing?.slackMessageTs
+          slackMessageTs: existing?.slackMessageTs,
+          // Enhanced metadata
+          additions: prMetadata.additions,
+          deletions: prMetadata.deletions,
+          changedFiles: prMetadata.changedFiles,
+          totalChanges: prMetadata.totalChanges
         });
 
         // Only create new assignments if this is a new PR
@@ -113,7 +119,29 @@ export function githubWebhookHandlerFactory(args: { slackApp: App }) {
         // Auto-create Jira ticket if enabled and no ticket exists
         if (jira && !issueKey && env.JIRA_AUTO_CREATE_ON_PR_OPEN && env.JIRA_PROJECT_KEY) {
           try {
-            const description = `PR: ${url}\nRepository: ${repoFullName}\nAuthor: ${authorGithub}\nSize: ${size}\nStack: ${stack}${size === 'LARGE' ? '\n\n⚠️ Large PR - Consider splitting into smaller PRs' : ''}`;
+            const metadataParts = [
+              `PR: ${url}`,
+              `Repository: ${repoFullName}`,
+              `Author: ${authorGithub}`,
+              `Size: ${size}`,
+              `Stack: ${stack}`
+            ];
+            
+            if (prMetadata.additions || prMetadata.deletions || prMetadata.changedFiles) {
+              metadataParts.push('');
+              metadataParts.push('Changes:');
+              if (prMetadata.additions) metadataParts.push(`+${prMetadata.additions} additions`);
+              if (prMetadata.deletions) metadataParts.push(`-${prMetadata.deletions} deletions`);
+              if (prMetadata.changedFiles) metadataParts.push(`${prMetadata.changedFiles} files changed`);
+              if (prMetadata.totalChanges) metadataParts.push(`Total: ${prMetadata.totalChanges} lines`);
+            }
+            
+            if (size === 'LARGE') {
+              metadataParts.push('');
+              metadataParts.push('⚠️ Large PR - Consider splitting into smaller PRs');
+            }
+            
+            const description = metadataParts.join('\n');
             
             const sprints = await jira.getActiveSprints(env.JIRA_PROJECT_KEY);
             const activeSprint = sprints.length > 0 ? sprints[0] : undefined;
