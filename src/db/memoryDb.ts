@@ -31,12 +31,15 @@ export interface PrRecord {
   slackMessageTs?: string;
 }
 
+export type AssignmentStatus = 'ASSIGNED' | 'IN_PROGRESS' | 'DONE';
+
 export interface Assignment {
   id: string;
   prId: string;
   memberId: string;
   createdAt: number;
   completedAt?: number;
+  status: AssignmentStatus;
   slackUserId?: string; // for quick lookup
 }
 
@@ -143,14 +146,27 @@ class MemoryDb {
     return assignments.length;
   }
 
-  async markAssignmentDone(assignmentId: string): Promise<boolean> {
-    const assignment = this.assignments.get(assignmentId);
-    if (assignment && !assignment.completedAt) {
-      assignment.completedAt = Date.now();
-      return true;
-    }
-    return false;
-  }
+        async markAssignmentDone(assignmentId: string): Promise<boolean> {
+          const assignment = this.assignments.get(assignmentId);
+          if (assignment && assignment.status !== 'DONE') {
+            assignment.completedAt = Date.now();
+            assignment.status = 'DONE';
+            return true;
+          }
+          return false;
+        }
+
+        async updateAssignmentStatus(assignmentId: string, status: AssignmentStatus): Promise<boolean> {
+          const assignment = this.assignments.get(assignmentId);
+          if (assignment) {
+            assignment.status = status;
+            if (status === 'DONE' && !assignment.completedAt) {
+              assignment.completedAt = Date.now();
+            }
+            return true;
+          }
+          return false;
+        }
 
   async markAssignmentDoneBySlackUser(prId: string, slackUserId: string): Promise<boolean> {
     const assignments = await this.getAssignmentsForPr(prId);

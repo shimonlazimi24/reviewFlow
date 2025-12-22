@@ -1,10 +1,32 @@
 import dotenv from 'dotenv';
+import { logger } from '../utils/logger';
+
 dotenv.config();
 
 function req(name: string): string {
   const v = process.env[name];
-  if (!v) throw new Error(`Missing env var: ${name}`);
+  if (!v) {
+    logger.error(`Missing required environment variable: ${name}`);
+    throw new Error(`Missing env var: ${name}`);
+  }
   return v;
+}
+
+function opt(name: string, defaultValue: string = ''): string {
+  return process.env[name] ?? defaultValue;
+}
+
+function optBool(name: string, defaultValue: boolean = false): boolean {
+  const v = process.env[name];
+  if (!v) return defaultValue;
+  return v.toLowerCase() === 'true' || v === '1';
+}
+
+function optNum(name: string, defaultValue: number): number {
+  const v = process.env[name];
+  if (!v) return defaultValue;
+  const num = Number(v);
+  return isNaN(num) ? defaultValue : num;
 }
 
 export const env = {
@@ -25,11 +47,18 @@ export const env = {
   JIRA_MERGE_TRANSITION_NAME: process.env.JIRA_MERGE_TRANSITION_NAME ?? 'Done',
   JIRA_PROJECT_KEY: process.env.JIRA_PROJECT_KEY ?? '',
   JIRA_ISSUE_TYPE: process.env.JIRA_ISSUE_TYPE ?? 'Task',
-  JIRA_DEFAULT_SPRINT_FIELD: process.env.JIRA_DEFAULT_SPRINT_FIELD ?? 'customfield_10020', // Default sprint field ID
-  JIRA_AUTO_CREATE_ON_PR_OPEN: (process.env.JIRA_AUTO_CREATE_ON_PR_OPEN ?? 'false') === 'true', // Auto-create Jira ticket when PR opens
+  JIRA_DEFAULT_SPRINT_FIELD: opt('JIRA_DEFAULT_SPRINT_FIELD', 'customfield_10020'),
+  JIRA_AUTO_CREATE_ON_PR_OPEN: optBool('JIRA_AUTO_CREATE_ON_PR_OPEN', false),
 
   // Database
-  DATABASE_URL: process.env.DATABASE_URL ?? '' // PostgreSQL connection string (Railway provides this)
+  DATABASE_URL: opt('DATABASE_URL'),
+
+  // Logging
+  LOG_LEVEL: opt('LOG_LEVEL', 'INFO'),
+
+  // Application
+  NODE_ENV: opt('NODE_ENV', 'development'),
+  APP_NAME: opt('APP_NAME', 'reviewflow')
 };
 
 export const jiraEnabled =

@@ -2,22 +2,28 @@ import express from 'express';
 import bodyParser from 'body-parser';
 import { App, ExpressReceiver } from '@slack/bolt';
 import { env, useDatabase } from './config/env';
+import { validateEnvironment } from './config/validateEnv';
 import { registerSlackHandlers } from './slack/handlers';
 import { githubWebhookHandlerFactory } from './github/webhookHandler';
 import { createDb } from './db/memoryDb';
+import { logger } from './utils/logger';
+import { formatErrorResponse, asyncHandler } from './utils/errors';
 
 async function main() {
   try {
+    // Validate environment first (fail fast)
+    validateEnvironment();
     // Initialize database
     let db: any;
     if (useDatabase && env.DATABASE_URL) {
       db = createDb(true, env.DATABASE_URL);
       await db.init();
-      console.log('✅ Connected to PostgreSQL database');
+      logger.info('Connected to PostgreSQL database');
     } else {
       db = createDb(false);
-      console.log('⚠️  Using in-memory database (data will be lost on restart)');
-      console.log('💡 To enable persistence, add DATABASE_URL environment variable');
+      logger.warn('Using in-memory database (data will be lost on restart)', {
+        tip: 'Add DATABASE_URL environment variable to enable persistence'
+      });
     }
 
     // Set global db instance
@@ -55,16 +61,20 @@ async function main() {
 
     // Error handling middleware
     app.use((err: Error, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
-      console.error('Unhandled error:', err);
-      res.status(500).json({ error: 'Internal server error' });
+      logger.error('Unhandled error in Express middleware', err);
+      const errorResponse = formatErrorResponse(err);
+      res.status(errorResponse.error.statusCode).json(errorResponse);
     });
 
     await slackApp.start(env.PORT);
-    console.log(`⚡ ReviewFlow running on port ${env.PORT}`);
-    console.log(`📊 Health check: http://localhost:${env.PORT}/health`);
-    console.log(`🔗 GitHub webhook: http://localhost:${env.PORT}/webhooks/github`);
+    logger.info('ReviewFlow started successfully', {
+      port: env.PORT,
+      healthCheck: `http://localhost:${env.PORT}/health`,
+      githubWebhook: `http://localhost:${env.PORT}/webhooks/github`,
+      nodeEnv: env.NODE_ENV
+    });
   } catch (error) {
-    console.error('Failed to start ReviewFlow:', error);
+    logger.error('Failed to start ReviewFlow', error);
     process.exit(1);
   }
 }

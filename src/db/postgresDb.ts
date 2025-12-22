@@ -64,9 +64,21 @@ export class PostgresDb {
         member_id VARCHAR(255) NOT NULL REFERENCES members(id) ON DELETE CASCADE,
         created_at BIGINT NOT NULL,
         completed_at BIGINT,
+        status VARCHAR(20) NOT NULL DEFAULT 'ASSIGNED',
         slack_user_id VARCHAR(255),
         created_at_ts TIMESTAMP DEFAULT NOW()
       );
+      
+      -- Add status column if it doesn't exist (for existing databases)
+      DO $$ 
+      BEGIN
+        IF NOT EXISTS (
+          SELECT 1 FROM information_schema.columns 
+          WHERE table_name = 'assignments' AND column_name = 'status'
+        ) THEN
+          ALTER TABLE assignments ADD COLUMN status VARCHAR(20) NOT NULL DEFAULT 'ASSIGNED';
+        END IF;
+      END $$;
 
       CREATE INDEX IF NOT EXISTS idx_assignments_pr_id ON assignments(pr_id);
       CREATE INDEX IF NOT EXISTS idx_assignments_member_id ON assignments(member_id);
@@ -261,8 +273,26 @@ export class PostgresDb {
 
   async markAssignmentDone(assignmentId: string): Promise<boolean> {
     const result = await this.pool.query(
-      'UPDATE assignments SET completed_at = $1 WHERE id = $2 AND completed_at IS NULL',
-      [Date.now(), assignmentId]
+      'UPDATE assignments SET completed_at = $1, status = $2 WHERE id = $3 AND status != $2',
+      [Date.now(), 'DONE', assignmentId]
+    );
+    return result.rowCount !== null && result.rowCount > 0;
+  }
+
+  async updateAssignmentStatus(assignmentId: string, status: AssignmentStatus): Promise<boolean> {
+    const updates: string[] = ['status = $1'];
+    const values: any[] = [status];
+    
+    if (status === 'DONE') {
+      updates.push('completed_at = $2');
+      values.push(Date.now());
+    }
+    
+    values.push(assignmentId);
+    
+    const result = await this.pool.query(
+      `UPDATE assignments SET ${updates.join(', ')} WHERE id = $${values.length}`,
+      values
     );
     return result.rowCount !== null && result.rowCount > 0;
   }
@@ -322,6 +352,7 @@ export class PostgresDb {
       memberId: row.member_id,
       createdAt: row.created_at,
       completedAt: row.completed_at || undefined,
+      status: (row.status || 'ASSIGNED') as AssignmentStatus,
       slackUserId: row.slack_user_id || undefined
     };
   }
