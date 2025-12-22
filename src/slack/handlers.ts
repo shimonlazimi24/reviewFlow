@@ -1132,5 +1132,64 @@ export function registerSlackHandlers(app: App) {
       );
     }
   });
+
+  // Analytics command
+  app.command('/metrics', async ({ ack, command, client, respond }) => {
+    await ack();
+    const userId = command.user_id;
+    const channelId = command.channel_id;
+
+    try {
+      const args = command.text?.trim();
+      const teamId = args || undefined;
+
+      const analytics = new AnalyticsService();
+      const metrics = await analytics.getReviewMetrics(teamId);
+      const formatted = analytics.formatMetricsForSlack(metrics);
+
+      await sendResponse(client, channelId, userId, formatted, respond);
+    } catch (error) {
+      logger.error('Error in /metrics command', error);
+      await sendResponse(client, channelId, userId, `❌ Failed to get metrics: ${(error as Error).message}`, respond);
+    }
+  });
+
+  // Team metrics command
+  app.command('/team-metrics', async ({ ack, command, client, respond }) => {
+    await ack();
+    const userId = command.user_id;
+    const channelId = command.channel_id;
+
+    try {
+      const args = command.text?.trim();
+      const teamId = args || undefined;
+
+      const analytics = new AnalyticsService();
+      const teamMetrics = await analytics.getTeamMetrics(teamId);
+
+      let text = `📊 *Team Metrics${teamMetrics.teamName ? `: ${teamMetrics.teamName}` : ''}*\n\n`;
+      text += `*Members:*\n`;
+      text += `• Total: ${teamMetrics.memberCount}\n`;
+      text += `• Active: ${teamMetrics.activeMemberCount}\n\n`;
+      text += `*PRs:*\n`;
+      text += `• Total: ${teamMetrics.totalPRs}\n`;
+      text += `• Open: ${teamMetrics.openPRs}\n\n`;
+      text += `*Timing:*\n`;
+      text += `• Average Review Time: ${formatDuration(teamMetrics.averageReviewTime)}\n`;
+      text += `• Average Waiting Time: ${formatDuration(teamMetrics.averageWaitingTime)}\n\n`;
+      text += `*Workload Distribution:*\n`;
+
+      for (const workload of teamMetrics.workloadDistribution) {
+        const member = await db.getMember(workload.memberId);
+        const github = member?.githubUsernames[0] || 'N/A';
+        text += `• <@${workload.slackUserId}> (${github}): ${workload.openReviews} open, ${workload.completedReviews} completed\n`;
+      }
+
+      await sendResponse(client, channelId, userId, text, respond);
+    } catch (error) {
+      logger.error('Error in /team-metrics command', error);
+      await sendResponse(client, channelId, userId, `❌ Failed to get team metrics: ${(error as Error).message}`, respond);
+    }
+  });
 }
 
