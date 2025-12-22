@@ -15,6 +15,7 @@ export interface WorkspaceContext {
     resetAt: number;
   };
   githubInstallationId?: string;
+  currentPeriodEnd?: number;
 }
 
 /**
@@ -88,7 +89,8 @@ export async function loadWorkspaceContext(slackTeamId: string): Promise<Workspa
         limit: usage.limit,
         resetAt: usage.resetAt
       },
-      githubInstallationId: workspace.githubInstallationId
+      githubInstallationId: workspace.githubInstallationId,
+      currentPeriodEnd: subscription.currentPeriodEnd
     };
   } catch (error) {
     logger.error('Failed to load workspace context', error);
