@@ -122,6 +122,85 @@ async function main() {
       app.post('/webhooks/github', githubWebhookHandlerFactory({ slackApp }));
     }
 
+    // Billing routes
+    app.get('/billing/upgrade', async (req, res) => {
+      try {
+        const { team_id, user_id } = req.query;
+        if (!team_id || !user_id) {
+          return res.status(400).send('Missing team_id or user_id');
+        }
+
+        const { PolarService } = require('./services/polarService');
+        const polar = new PolarService();
+        
+        const checkout = await polar.createCheckoutSession({
+          slackTeamId: team_id as string,
+          slackUserId: user_id as string,
+          plan: 'pro'
+        });
+
+        res.redirect(checkout.url);
+      } catch (error) {
+        logger.error('Error creating checkout session', error);
+        res.status(500).send('Failed to create checkout session');
+      }
+    });
+
+    app.get('/billing/portal', async (req, res) => {
+      try {
+        const { team_id } = req.query;
+        if (!team_id) {
+          return res.status(400).send('Missing team_id');
+        }
+
+        const { db } = require('./db/memoryDb');
+        const workspace = await db.getWorkspaceBySlackTeamId(team_id as string);
+        
+        if (!workspace || !workspace.polarCustomerId) {
+          return res.status(404).send('No subscription found. Please upgrade first.');
+        }
+
+        const { PolarService } = require('./services/polarService');
+        const { POLAR_SUCCESS_URL } = require('./config/env');
+        const polar = new PolarService();
+        
+        const portal = await polar.createCustomerPortalSession(
+          workspace.polarCustomerId,
+          POLAR_SUCCESS_URL
+        );
+
+        res.redirect(portal.url);
+      } catch (error) {
+        logger.error('Error creating portal session', error);
+        res.status(500).send('Failed to create portal session');
+      }
+    });
+
+    app.get('/billing/success', (_req, res) => {
+      res.send(`
+        <html>
+          <head><title>Payment Successful</title></head>
+          <body style="font-family: Arial, sans-serif; text-align: center; padding: 50px;">
+            <h1>✅ Payment Successful!</h1>
+            <p>Your subscription has been activated.</p>
+            <p>Return to Slack and run <code>/billing</code> to verify your subscription.</p>
+          </body>
+        </html>
+      `);
+    });
+
+    app.get('/billing/cancel', (_req, res) => {
+      res.send(`
+        <html>
+          <head><title>Payment Canceled</title></head>
+          <body style="font-family: Arial, sans-serif; text-align: center; padding: 50px;">
+            <h1>❌ Payment Canceled</h1>
+            <p>You can upgrade anytime by running <code>/upgrade</code> in Slack.</p>
+          </body>
+        </html>
+      `);
+    });
+
     // Error handling middleware
     app.use((err: Error, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
       logger.error('Unhandled error in Express middleware', err);

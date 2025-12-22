@@ -7,6 +7,7 @@ import { pickReviewers } from '../services/assignmentService';
 import { formatWaitingTime, calculateWaitingTime, formatDuration } from '../utils/time';
 import { buildSettingsModal, buildAddMemberModal, buildEditMemberModal } from './modals';
 import { registerTeamHandlers } from './teamHandlers';
+import { registerBillingHandlers } from './billingHandlers';
 import { requireAdmin } from '../utils/permissions';
 import { logger } from '../utils/logger';
 import { AnalyticsService } from '../services/analyticsService';
@@ -16,6 +17,9 @@ import { PolarService } from '../services/polarService';
 export function registerSlackHandlers(app: App) {
   // Register team management handlers
   registerTeamHandlers(app);
+  
+  // Register billing handlers
+  registerBillingHandlers(app);
   // Helper to send response (works in DMs and channels)
   const sendResponse = async (client: any, channelId: string, userId: string, text: string, respond: any) => {
     try {
@@ -1223,8 +1227,12 @@ export function registerSlackHandlers(app: App) {
       }
 
       if (context.plan === 'FREE') {
-        const upgradeUrl = polar.generateCheckoutUrl(context.workspaceId, 'PRO' as any);
-        text += `\n\n<${upgradeUrl}|🚀 Upgrade to Pro>`;
+        const checkout = await polar.createCheckoutSession({
+          slackTeamId: teamId,
+          slackUserId: userId,
+          plan: 'pro'
+        });
+        text += `\n\n<${checkout.url}|🚀 Upgrade to Pro>`;
       }
 
       await sendResponse(client, channelId, userId, text, respond);

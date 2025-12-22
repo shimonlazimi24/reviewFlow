@@ -67,10 +67,17 @@ export const env = {
   REMINDER_CHECK_INTERVAL_MINUTES: optNum('REMINDER_CHECK_INTERVAL_MINUTES', 60), // Check every hour
 
   // Billing (Polar.sh)
-  POLAR_BASE_URL: opt('POLAR_BASE_URL', 'https://polar.sh'),
-  POLAR_API_KEY: opt('POLAR_API_KEY'),
-  POLAR_WEBHOOK_SECRET: opt('POLAR_WEBHOOK_SECRET')
+  POLAR_BASE_URL: opt('POLAR_BASE_URL', 'https://api.polar.sh'),
+  POLAR_ACCESS_TOKEN: opt('POLAR_ACCESS_TOKEN'),
+  POLAR_WEBHOOK_SECRET: opt('POLAR_WEBHOOK_SECRET'),
+  POLAR_PRO_PRODUCT_ID: opt('POLAR_PRO_PRODUCT_ID'),
+  POLAR_PRO_PRICE_ID: opt('POLAR_PRO_PRICE_ID'),
+  APP_BASE_URL: opt('APP_BASE_URL', 'http://localhost:3000')
 };
+
+// Computed URLs
+export const POLAR_SUCCESS_URL = `${env.APP_BASE_URL}/billing/success`;
+export const POLAR_CANCEL_URL = `${env.APP_BASE_URL}/billing/cancel`;
 
 export const jiraEnabled =
   Boolean(env.JIRA_BASE_URL && env.JIRA_EMAIL && env.JIRA_API_TOKEN);

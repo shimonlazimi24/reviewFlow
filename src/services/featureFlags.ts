@@ -1,6 +1,7 @@
-// Feature flags and billing readiness
-import { env } from '../config/env';
+// Feature flags and billing readiness - per-workspace
+import { db } from '../db/memoryDb';
 import { logger } from '../utils/logger';
+import { SubscriptionPlan, PLAN_LIMITS } from '../types/subscription';
 
 export interface FeatureFlags {
   // Core features
@@ -20,80 +21,63 @@ export interface FeatureFlags {
   maxReposPerTeam: number;
 }
 
-// Default feature flags (free tier)
-const defaultFlags: FeatureFlags = {
-  multiTeam: true,
-  analytics: true,
-  reminders: true,
-  jiraIntegration: true,
-  customWorkflows: false,
-  advancedAnalytics: false,
-  apiAccess: false,
-  maxTeams: 3,
-  maxMembersPerTeam: 10,
-  maxReposPerTeam: 10
-};
-
-// Premium feature flags
-const premiumFlags: FeatureFlags = {
-  ...defaultFlags,
-  customWorkflows: true,
-  advancedAnalytics: true,
-  apiAccess: true,
-  maxTeams: 999,
-  maxMembersPerTeam: 999,
-  maxReposPerTeam: 999
-};
-
-let currentFlags: FeatureFlags = defaultFlags;
+/**
+ * Get workspace subscription tier
+ */
+export async function getWorkspaceTier(slackTeamId: string): Promise<'free' | 'pro' | 'enterprise'> {
+  try {
+    const workspace = await db.getWorkspaceBySlackTeamId(slackTeamId);
+    if (!workspace) {
+      return 'free';
+    }
+    
+    const subscription = await db.getSubscription(workspace.id);
+    if (!subscription) {
+      return 'free';
+    }
+    
+    const plan = subscription.plan;
+    if (plan === 'PRO') return 'pro';
+    if (plan === 'TEAM' || plan === 'ENTERPRISE') return 'enterprise';
+    return 'free';
+  } catch (error) {
+    logger.error('Failed to get workspace tier', error);
+    return 'free';
+  }
+}
 
 /**
- * Initialize feature flags based on subscription tier
+ * Get workspace feature flags
  */
-export function initFeatureFlags(): void {
-  const tier = process.env.SUBSCRIPTION_TIER || 'free';
+export async function getWorkspaceFlags(slackTeamId: string): Promise<FeatureFlags> {
+  const tier = await getWorkspaceTier(slackTeamId);
+  const limits = PLAN_LIMITS[tier === 'pro' ? 'PRO' : tier === 'enterprise' ? 'ENTERPRISE' : 'FREE'];
   
-  switch (tier.toLowerCase()) {
-    case 'premium':
-    case 'pro':
-      currentFlags = premiumFlags;
-      logger.info('Premium features enabled');
-      break;
-    case 'enterprise':
-      currentFlags = { ...premiumFlags, maxTeams: 9999, maxMembersPerTeam: 9999, maxReposPerTeam: 9999 };
-      logger.info('Enterprise features enabled');
-      break;
-    default:
-      currentFlags = defaultFlags;
-      logger.info('Free tier features enabled');
-  }
+  return {
+    multiTeam: limits.maxTeams > 1,
+    analytics: true, // Basic analytics always available
+    reminders: limits.reminders,
+    jiraIntegration: limits.jiraIntegration,
+    customWorkflows: limits.customWorkflows,
+    advancedAnalytics: limits.advancedAnalytics,
+    apiAccess: limits.apiAccess,
+    maxTeams: limits.maxTeams,
+    maxMembersPerTeam: limits.maxMembersPerTeam,
+    maxReposPerTeam: limits.maxReposPerTeam
+  };
 }
 
 /**
- * Check if a feature is enabled
+ * Check workspace limit
  */
-export function isFeatureEnabled(feature: keyof FeatureFlags): boolean {
-  if (feature === 'maxTeams' || feature === 'maxMembersPerTeam' || feature === 'maxReposPerTeam') {
-    return true; // Limits are always "enabled", just checked differently
-  }
-  return currentFlags[feature] === true;
-}
-
-/**
- * Get feature limits
- */
-export function getFeatureLimit(limit: 'maxTeams' | 'maxMembersPerTeam' | 'maxReposPerTeam'): number {
-  return currentFlags[limit];
-}
-
-/**
- * Check if limit is exceeded
- */
-export async function checkLimit(
+export async function checkWorkspaceLimit(
+  slackTeamId: string,
   limit: 'maxTeams' | 'maxMembersPerTeam' | 'maxReposPerTeam',
   currentCount: number
 ): Promise<{ allowed: boolean; limit: number; current: number }> {
-  const maxLimit = getFeatureLimit(limit);
+  const flags = await getWorkspaceFlags(slackTeamId);
+  const maxLimit = flags[limit];
+  
   return {
     allowed: currentCount < maxLimit,
     limit: maxLimit,
@@ -102,16 +86,44 @@ export async function checkLimit(
 }
 
 /**
- * Get all feature flags (for display)
+ * Assert feature is available (throws if not)
  */
-export function getFeatureFlags(): FeatureFlags {
-  return { ...currentFlags };
+export class UpgradeRequiredError extends Error {
+  constructor(public feature: string, public currentPlan: string, public requiredPlan: string) {
+    super(`Feature "${feature}" requires ${requiredPlan} plan. Current plan: ${currentPlan}`);
+    this.name = 'UpgradeRequiredError';
+  }
 }
 
 /**
- * Get subscription tier
+ * Assert feature is available for workspace
  */
-export function getSubscriptionTier(): string {
-  return process.env.SUBSCRIPTION_TIER || 'free';
+export async function assertFeature(slackTeamId: string, featureKey: keyof FeatureFlags): Promise<void> {
+  const flags = await getWorkspaceFlags(slackTeamId);
+  const tier = await getWorkspaceTier(slackTeamId);
+  
+  if (!flags[featureKey]) {
+    const requiredPlan = featureKey === 'customWorkflows' || featureKey === 'apiAccess' ? 'TEAM' : 'PRO';
+    throw new UpgradeRequiredError(featureKey, tier.toUpperCase(), requiredPlan);
+  }
+}
+
+// Legacy functions for backward compatibility
+export function initFeatureFlags(): void {
+  logger.info('Feature flags initialized (per-workspace)');
+}
+
+export async function checkLimit(
+  limit: 'maxTeams' | 'maxMembersPerTeam' | 'maxReposPerTeam',
+  currentCount: number
+): Promise<{ allowed: boolean; limit: number; current: number }> {
+  // Default to free tier limits if no workspace context
+  const limits = PLAN_LIMITS['FREE'];
+  const maxLimit = limits[limit];
+  return {
+    allowed: currentCount < maxLimit,
+    limit: maxLimit,
+    current: currentCount
+  };
 }
 

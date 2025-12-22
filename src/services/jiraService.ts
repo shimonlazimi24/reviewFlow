@@ -1,5 +1,6 @@
-import axios, { AxiosInstance } from 'axios';
+import axios, { AxiosInstance, AxiosError } from 'axios';
 import { env } from '../config/env';
+import { logger } from '../utils/logger';
 
 export interface JiraIssueMinimal {
   key: string;

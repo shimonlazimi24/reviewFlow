@@ -5,13 +5,12 @@ import { loadWorkspaceContext } from '../services/workspaceContext';
 import { SubscriptionPlan } from '../types/subscription';
 import { PolarService } from '../services/polarService';
 import { logger } from '../utils/logger';
-import { formatDuration } from '../utils/time';
 
 export function registerHomeTab(app: App) {
   app.event('app_home_opened', async ({ event, client }) => {
     try {
       const userId = event.user;
-      const teamId = event.team;
+      const teamId = (event as any).team;
 
       if (!teamId) {
         logger.warn('Home tab opened without team ID');
@@ -23,17 +22,17 @@ export function registerHomeTab(app: App) {
 
       // Get current open PRs
       const openPRs = await db.listOpenPrs();
-      const workspacePRs = openPRs.filter(pr => {
+      const workspacePRs = openPRs.filter((pr: any) => {
         // Filter by workspace if needed
         return true; // For now, show all
       });
 
       // Get team members
       const members = await db.listMembers();
-      const activeMembers = members.filter(m => m.isActive && !m.isUnavailable);
+      const activeMembers = members.filter((m: any) => m.isActive && !m.isUnavailable);
 
       // Build home tab view
-      const blocks = buildHomeTabBlocks(context, workspacePRs.length, activeMembers.length);
+      const blocks = await buildHomeTabBlocks(context, workspacePRs.length, activeMembers.length);
 
       await client.views.publish({
         user_id: userId,
@@ -50,7 +49,7 @@ export function registerHomeTab(app: App) {
   });
 }
 
-function buildHomeTabBlocks(context: any, openPRCount: number, memberCount: number): any[] {
+async function buildHomeTabBlocks(context: any, openPRCount: number, memberCount: number): Promise<any[]> {
   const planEmoji = getPlanEmoji(context.plan);
   const usagePercent = Math.round((context.usage.prsProcessed / context.usage.limit) * 100);
   const usageBar = '█'.repeat(Math.min(20, Math.floor(usagePercent / 5))) + '░'.repeat(20 - Math.min(20, Math.floor(usagePercent / 5)));
@@ -135,7 +134,12 @@ function buildHomeTabBlocks(context: any, openPRCount: number, memberCount: numb
   // Add upgrade CTA if on free plan
   if (context.plan === SubscriptionPlan.FREE) {
     const polar = new PolarService();
-    const upgradeUrl = polar.generateCheckoutUrl(context.workspaceId, SubscriptionPlan.PRO);
+    const checkout = await polar.createCheckoutSession({
+      slackTeamId: context.slackTeamId,
+      slackUserId: '', // Not available in home tab context
+      plan: 'pro'
+    });
+    const upgradeUrl = checkout.url;
 
     blocks.push(
       {

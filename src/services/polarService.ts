@@ -1,181 +1,193 @@
 // Polar.sh billing integration service
 import axios, { AxiosInstance } from 'axios';
-import { env } from '../config/env';
+import { env, POLAR_SUCCESS_URL, POLAR_CANCEL_URL } from '../config/env';
 import { logger } from '../utils/logger';
-import { SubscriptionPlan, SubscriptionStatus } from '../types/subscription';
-import { db } from '../db/memoryDb';
+import crypto from 'crypto';
+
+export interface PolarCheckoutSession {
+  id: string;
+  url: string;
+}
+
+export interface PolarCustomerPortalSession {
+  url: string;
+}
 
 export interface PolarWebhookEvent {
-  type: 'subscription.created' | 'subscription.updated' | 'subscription.canceled';
-  data: {
-    id: string;
-    customer_id?: string;
-    product_id?: string;
-    status: string;
-    metadata?: Record<string, string>;
-    current_period_start?: string;
-    current_period_end?: string;
-    cancel_at_period_end?: boolean;
-  };
+  type: string;
+  data: any;
 }
 
 export class PolarService {
   private client: AxiosInstance;
-  private apiKey: string;
+  private accessToken: string;
 
   constructor() {
-    this.apiKey = env.POLAR_API_KEY || '';
+    this.accessToken = env.POLAR_ACCESS_TOKEN || '';
     this.client = axios.create({
       baseURL: env.POLAR_BASE_URL,
       headers: {
-        'Authorization': `Bearer ${this.apiKey}`,
-        'Content-Type': 'application/json'
+        'Authorization': `Bearer ${this.accessToken}`,
+        'Content-Type': 'application/json',
+        'Accept': 'application/json'
       }
     });
   }
 
   /**
-   * Handle Polar webhook events
+   * Create checkout session for Pro plan
    */
-  async handleWebhook(event: PolarWebhookEvent): Promise<void> {
+  async createCheckoutSession(params: {
+    slackTeamId: string;
+    slackUserId: string;
+    plan?: 'pro';
+  }): Promise<PolarCheckoutSession> {
     try {
-      const { type, data } = event;
-      const workspaceId = data.metadata?.workspace_id;
-
-      if (!workspaceId) {
-        logger.warn('Polar webhook missing workspace_id in metadata', { event });
-        return;
+      if (!env.POLAR_PRO_PRODUCT_ID && !env.POLAR_PRO_PRICE_ID) {
+        throw new Error('POLAR_PRO_PRODUCT_ID or POLAR_PRO_PRICE_ID must be configured');
       }
 
-      logger.info('Processing Polar webhook', { type, workspaceId, subscriptionId: data.id });
+      const productId = env.POLAR_PRO_PRODUCT_ID;
+      const priceId = env.POLAR_PRO_PRICE_ID;
 
-      switch (type) {
-        case 'subscription.created':
-          await this.handleSubscriptionCreated(workspaceId, data);
-          break;
-        case 'subscription.updated':
-          await this.handleSubscriptionUpdated(workspaceId, data);
-          break;
-        case 'subscription.canceled':
-          await this.handleSubscriptionCanceled(workspaceId, data);
-          break;
-        default:
-          logger.warn('Unknown Polar webhook type', { type });
+      // Polar API: Create checkout link
+      // Using product_id or price_id depending on what's configured
+      const payload: any = {
+        product_id: productId,
+        success_url: POLAR_SUCCESS_URL,
+        metadata: {
+          slack_team_id: params.slackTeamId,
+          slack_user_id: params.slackUserId
+        }
+      };
+
+      if (priceId) {
+        payload.price_id = priceId;
       }
+
+      const response = await this.client.post('/v1/checkouts', payload);
+
+      return {
+        id: response.data.id,
+        url: response.data.url || response.data.checkout_url
+      };
+    } catch (error: any) {
+      logger.error('Failed to create Polar checkout session', error);
+      throw new Error(`Failed to create checkout session: ${error.message}`);
+    }
+  }
+
+  /**
+   * Create customer portal session
+   */
+  async createCustomerPortalSession(
+    polarCustomerId: string,
+    returnUrl: string
+  ): Promise<PolarCustomerPortalSession> {
+    try {
+      const response = await this.client.post('/v1/customers/portal', {
+        customer_id: polarCustomerId,
+        return_url: returnUrl
+      });
+
+      return {
+        url: response.data.url || response.data.portal_url
+      };
+    } catch (error: any) {
+      logger.error('Failed to create Polar customer portal session', error);
+      throw new Error(`Failed to create portal session: ${error.message}`);
+    }
+  }
+
+  /**
+   * Verify webhook signature
+   */
+  verifyWebhookSignature(rawBody: string | Buffer, signature: string): boolean {
+    if (!env.POLAR_WEBHOOK_SECRET) {
+      logger.warn('POLAR_WEBHOOK_SECRET not configured, skipping signature verification');
+      return true; // Allow if not configured (development)
+    }
+
+    try {
+      const body = typeof rawBody === 'string' ? rawBody : rawBody.toString('utf8');
+      const hmac = crypto.createHmac('sha256', env.POLAR_WEBHOOK_SECRET);
+      const digest = hmac.update(body).digest('hex');
+      const expectedSignature = `sha256=${digest}`;
+
+      // Use timing-safe comparison
+      return crypto.timingSafeEqual(
+        Buffer.from(signature),
+        Buffer.from(expectedSignature)
+      );
     } catch (error) {
-      logger.error('Error handling Polar webhook', error);
-      throw error;
+      logger.error('Error verifying Polar webhook signature', error);
+      return false;
     }
   }
 
   /**
-   * Handle subscription created
+   * Extract Slack team ID from webhook metadata
    */
-  private async handleSubscriptionCreated(workspaceId: string, data: any): Promise<void> {
-    const plan = this.mapProductIdToPlan(data.product_id);
-    const status = this.mapStatus(data.status);
-
-    await db.upsertSubscription({
-      workspaceId,
-      plan,
-      status,
-      polarSubscriptionId: data.id,
-      currentPeriodStart: data.current_period_start ? new Date(data.current_period_start).getTime() : undefined,
-      currentPeriodEnd: data.current_period_end ? new Date(data.current_period_end).getTime() : undefined,
-      cancelAtPeriodEnd: data.cancel_at_period_end || false,
-      createdAt: Date.now(),
-      updatedAt: Date.now()
-    });
-
-    logger.info('Subscription created', { workspaceId, plan, status });
+  extractSlackTeamId(event: PolarWebhookEvent): string | undefined {
+    const metadata = event.data?.metadata || event.data?.subscription?.metadata;
+    return metadata?.slack_team_id || metadata?.external_id;
   }
 
   /**
-   * Handle subscription updated
+   * Handle webhook event
    */
-  private async handleSubscriptionUpdated(workspaceId: string, data: any): Promise<void> {
-    const plan = this.mapProductIdToPlan(data.product_id);
-    const status = this.mapStatus(data.status);
+  async handleWebhookEvent(event: PolarWebhookEvent): Promise<{
+    slackTeamId?: string;
+    action: 'created' | 'updated' | 'canceled' | 'revoked' | 'unknown';
+    subscriptionId?: string;
+    customerId?: string;
+    status?: string;
+    periodEnd?: number;
+  }> {
+    const slackTeamId = this.extractSlackTeamId(event);
+    const type = event.type;
 
-    await db.updateSubscription(workspaceId, {
-      plan,
-      status,
-      polarSubscriptionId: data.id,
-      currentPeriodStart: data.current_period_start ? new Date(data.current_period_start).getTime() : undefined,
-      currentPeriodEnd: data.current_period_end ? new Date(data.current_period_end).getTime() : undefined,
-      cancelAtPeriodEnd: data.cancel_at_period_end || false,
-      updatedAt: Date.now()
-    });
+    let action: 'created' | 'updated' | 'canceled' | 'revoked' | 'unknown' = 'unknown';
+    let subscriptionId: string | undefined;
+    let customerId: string | undefined;
+    let status: string | undefined;
+    let periodEnd: number | undefined;
 
-    logger.info('Subscription updated', { workspaceId, plan, status });
-  }
-
-  /**
-   * Handle subscription canceled
-   */
-  private async handleSubscriptionCanceled(workspaceId: string, data: any): Promise<void> {
-    await db.updateSubscription(workspaceId, {
-      status: SubscriptionStatus.CANCELED,
-      cancelAtPeriodEnd: true,
-      updatedAt: Date.now()
-    });
-
-    logger.info('Subscription canceled', { workspaceId });
-  }
-
-  /**
-   * Map Polar product ID to subscription plan
-   */
-  private mapProductIdToPlan(productId: string): SubscriptionPlan {
-    // Map your Polar product IDs to plans
-    // You'll configure these in Polar.sh
-    const productMap: Record<string, SubscriptionPlan> = {
-      [process.env.POLAR_PRODUCT_ID_PRO || '']: SubscriptionPlan.PRO,
-      [process.env.POLAR_PRODUCT_ID_TEAM || '']: SubscriptionPlan.TEAM,
-      [process.env.POLAR_PRODUCT_ID_ENTERPRISE || '']: SubscriptionPlan.ENTERPRISE
-    };
-
-    return productMap[productId] || SubscriptionPlan.FREE;
-  }
-
-  /**
-   * Map Polar status to our status
-   */
-  private mapStatus(status: string): SubscriptionStatus {
-    const statusMap: Record<string, SubscriptionStatus> = {
-      'active': SubscriptionStatus.ACTIVE,
-      'canceled': SubscriptionStatus.CANCELED,
-      'past_due': SubscriptionStatus.PAST_DUE,
-      'trialing': SubscriptionStatus.TRIALING
-    };
-
-    return statusMap[status.toLowerCase()] || SubscriptionStatus.ACTIVE;
-  }
-
-  /**
-   * Generate checkout URL
-   */
-  generateCheckoutUrl(workspaceId: string, plan: SubscriptionPlan): string {
-    const productId = this.getProductIdForPlan(plan);
-    if (!productId) {
-      throw new Error(`No product ID configured for plan: ${plan}`);
+    if (type === 'subscription.created') {
+      action = 'created';
+      subscriptionId = event.data?.id;
+      customerId = event.data?.customer_id;
+      status = event.data?.status;
+      if (event.data?.current_period_end) {
+        periodEnd = new Date(event.data.current_period_end).getTime();
+      }
+    } else if (type === 'subscription.updated') {
+      action = 'updated';
+      subscriptionId = event.data?.id;
+      customerId = event.data?.customer_id;
+      status = event.data?.status;
+      if (event.data?.current_period_end) {
+        periodEnd = new Date(event.data.current_period_end).getTime();
+      }
+    } else if (type === 'subscription.canceled') {
+      action = 'canceled';
+      subscriptionId = event.data?.id;
+      customerId = event.data?.customer_id;
+      status = 'canceled';
+    } else if (type === 'subscription.revoked') {
+      action = 'revoked';
+      subscriptionId = event.data?.id;
+      customerId = event.data?.customer_id;
+      status = 'revoked';
     }
 
-    return `${env.POLAR_BASE_URL}/checkout?product=${productId}&metadata[workspace_id]=${workspaceId}`;
-  }
-
-  /**
-   * Get product ID for plan
-   */
-  private getProductIdForPlan(plan: SubscriptionPlan): string | undefined {
-    const productMap: Record<SubscriptionPlan, string | undefined> = {
-      [SubscriptionPlan.FREE]: undefined,
-      [SubscriptionPlan.PRO]: process.env.POLAR_PRODUCT_ID_PRO,
-      [SubscriptionPlan.TEAM]: process.env.POLAR_PRODUCT_ID_TEAM,
-      [SubscriptionPlan.ENTERPRISE]: process.env.POLAR_PRODUCT_ID_ENTERPRISE
+    return {
+      slackTeamId,
+      action,
+      subscriptionId,
+      customerId,
+      status,
+      periodEnd
     };
-
-    return productMap[plan];
   }
 }
-

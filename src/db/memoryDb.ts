@@ -20,6 +20,20 @@ export interface RepoMapping {
   createdAt: number;
 }
 
+export interface Workspace {
+  id: string; // Workspace ID (internal)
+  slackTeamId: string; // Slack team ID (primary key for lookup)
+  name?: string;
+  plan: 'free' | 'pro' | 'enterprise';
+  polarCustomerId?: string;
+  polarSubscriptionId?: string;
+  subscriptionStatus: 'active' | 'canceled' | 'revoked' | 'past_due' | 'incomplete' | 'unknown';
+  currentPeriodEnd?: number; // Unix timestamp
+  githubInstallationId?: string; // GitHub App installation ID
+  createdAt: number;
+  updatedAt: number;
+}
+
 export interface Member {
   id: string;
   slackUserId: string;
@@ -63,6 +77,69 @@ export interface Assignment {
   completedAt?: number;
   status: AssignmentStatus;
   slackUserId?: string; // for quick lookup
+}
+
+// Define a common interface for database operations
+export interface IDatabase {
+  init(): Promise<void>;
+  
+  // Workspace operations
+  addWorkspace(workspace: Workspace): Promise<void>;
+  getWorkspace(id: string): Promise<Workspace | undefined>;
+  getWorkspaceBySlackTeamId(slackTeamId: string): Promise<Workspace | undefined>;
+  upsertWorkspace(workspace: Workspace): Promise<void>;
+  updateWorkspace(id: string, updates: Partial<Workspace>): Promise<void>;
+  updateWorkspacePlan(slackTeamId: string, plan: 'free' | 'pro' | 'enterprise', status: 'active' | 'canceled' | 'revoked' | 'past_due' | 'incomplete' | 'unknown', subscriptionId?: string, customerId?: string, periodEnd?: number): Promise<void>;
+  
+  // Subscription operations
+  upsertSubscription(subscription: any): Promise<void>;
+  getSubscription(workspaceId: string): Promise<any | undefined>;
+  updateSubscription(workspaceId: string, updates: Partial<any>): Promise<void>;
+  
+  // Usage tracking
+  incrementUsage(workspaceId: string, month: string): Promise<void>;
+  getUsage(workspaceId: string, month: string): Promise<any | undefined>;
+  resetUsage(workspaceId: string, month: string): Promise<void>;
+  
+  // Audit logs
+  addAuditLog(log: any): Promise<void>;
+  
+  // Member operations
+  addMember(member: Member): Promise<void>;
+  getMember(id: string): Promise<Member | undefined>;
+  listMembers(teamId?: string): Promise<Member[]>;
+  updateMember(id: string, updates: Partial<Member>): Promise<void>;
+  removeMember(id: string): Promise<void>;
+  
+  // Team operations
+  addTeam(team: Team): Promise<void>;
+  getTeam(id: string): Promise<Team | undefined>;
+  listTeams(): Promise<Team[]>;
+  updateTeam(id: string, updates: Partial<Team>): Promise<void>;
+  removeTeam(id: string): Promise<void>;
+  
+  // Repo mapping operations
+  addRepoMapping(mapping: RepoMapping): Promise<void>;
+  getRepoMapping(repoFullName: string): Promise<RepoMapping | undefined>;
+  listRepoMappings(teamId?: string): Promise<RepoMapping[]>;
+  removeRepoMapping(id: string): Promise<void>;
+  
+  // PR operations
+  findPr(repoFullName: string, number: number): Promise<PrRecord | undefined>;
+  upsertPr(pr: PrRecord): Promise<PrRecord>;
+  updatePr(id: string, updates: Partial<PrRecord>): Promise<void>;
+  getPr(id: string): Promise<PrRecord | undefined>;
+  listOpenPrs(teamId?: string): Promise<PrRecord[]>;
+  
+  // Assignment operations
+  createAssignments(prId: string, memberIds: string[]): Promise<Assignment[]>;
+  getAssignmentsForPr(prId: string): Promise<Assignment[]>;
+  getOpenAssignmentsForMember(memberId: string): Promise<Assignment[]>;
+  getOpenAssignmentsCount(memberId: string): Promise<number>;
+  markAssignmentDone(assignmentId: string): Promise<boolean>;
+  markAssignmentDoneBySlackUser(prId: string, slackUserId: string): Promise<boolean>;
+  getAssignmentsBySlackUser(slackUserId: string): Promise<Assignment[]>;
+  updateAssignmentStatus(assignmentId: string, status: AssignmentStatus): Promise<boolean>;
 }
 
 class MemoryDb implements IDatabase {
@@ -129,10 +206,54 @@ class MemoryDb implements IDatabase {
     return Array.from(this.workspaces.values()).find(w => w.slackTeamId === slackTeamId);
   }
 
+  async upsertWorkspace(workspace: Workspace): Promise<void> {
+    const existing = Array.from(this.workspaces.values()).find(w => w.slackTeamId === workspace.slackTeamId);
+    if (existing) {
+      this.workspaces.set(existing.id, { ...existing, ...workspace, updatedAt: Date.now() });
+    } else {
+      this.workspaces.set(workspace.id, workspace);
+    }
+  }
+
   async updateWorkspace(id: string, updates: Partial<Workspace>): Promise<void> {
     const existing = this.workspaces.get(id);
     if (existing) {
       this.workspaces.set(id, { ...existing, ...updates, updatedAt: Date.now() });
+    }
+  }
+
+  async updateWorkspacePlan(
+    slackTeamId: string,
+    plan: 'free' | 'pro' | 'enterprise',
+    status: 'active' | 'canceled' | 'revoked' | 'past_due' | 'incomplete' | 'unknown',
+    subscriptionId?: string,
+    customerId?: string,
+    periodEnd?: number
+  ): Promise<void> {
+    const workspace = await this.getWorkspaceBySlackTeamId(slackTeamId);
+    if (workspace) {
+      await this.updateWorkspace(workspace.id, {
+        plan,
+        subscriptionStatus: status,
+        polarSubscriptionId: subscriptionId,
+        polarCustomerId: customerId,
+        currentPeriodEnd: periodEnd,
+        updatedAt: Date.now()
+      });
+    } else {
+      // Create new workspace
+      const newWorkspace: Workspace = {
+        id: `workspace_${slackTeamId}`,
+        slackTeamId,
+        plan,
+        subscriptionStatus: status,
+        polarSubscriptionId: subscriptionId,
+        polarCustomerId: customerId,
+        currentPeriodEnd: periodEnd,
+        createdAt: Date.now(),
+        updatedAt: Date.now()
+      };
+      await this.addWorkspace(newWorkspace);
     }
   }
 
@@ -322,40 +443,14 @@ class MemoryDb implements IDatabase {
     return assignments.length;
   }
 
-        async markAssignmentDone(assignmentId: string): Promise<boolean> {
-          const assignment = this.assignments.get(assignmentId);
-          if (assignment && assignment.status !== 'DONE') {
-            assignment.completedAt = Date.now();
-            assignment.status = 'DONE';
-            return true;
-          }
-          return false;
-        }
-
-        async updateAssignmentStatus(assignmentId: string, status: AssignmentStatus): Promise<boolean> {
-          const assignment = this.assignments.get(assignmentId);
-          if (assignment) {
-            assignment.status = status;
-            if (status === 'DONE' && !assignment.completedAt) {
-              assignment.completedAt = Date.now();
-            }
-            return true;
-          }
-          return false;
-        }
-
-  async markAssignmentDoneBySlackUser(prId: string, slackUserId: string): Promise<boolean> {
-    const assignments = await this.getAssignmentsForPr(prId);
-    const assignment = assignments.find(a => a.slackUserId === slackUserId && a.status !== 'DONE');
-    if (assignment) {
-      return await this.markAssignmentDone(assignment.id);
+  async markAssignmentDone(assignmentId: string): Promise<boolean> {
+    const assignment = this.assignments.get(assignmentId);
+    if (assignment && assignment.status !== 'DONE') {
+      assignment.completedAt = Date.now();
+      assignment.status = 'DONE';
+      return true;
     }
     return false;
-  }
-
-  async getAssignmentsBySlackUser(slackUserId: string): Promise<Assignment[]> {
-    return Array.from(this.assignments.values())
-      .filter(a => a.slackUserId === slackUserId && a.status !== 'DONE');
   }
 
   async updateAssignmentStatus(assignmentId: string, status: AssignmentStatus): Promise<boolean> {
@@ -370,87 +465,18 @@ class MemoryDb implements IDatabase {
     return false;
   }
 
-  // Workspace operations
-  async addWorkspace(workspace: Workspace): Promise<void> {
-    this.workspaces.set(workspace.id, workspace);
-  }
-
-  async getWorkspace(id: string): Promise<Workspace | undefined> {
-    return this.workspaces.get(id);
-  }
-
-  async getWorkspaceBySlackTeamId(slackTeamId: string): Promise<Workspace | undefined> {
-    return Array.from(this.workspaces.values()).find(w => w.slackTeamId === slackTeamId);
-  }
-
-  async updateWorkspace(id: string, updates: Partial<Workspace>): Promise<void> {
-    const existing = this.workspaces.get(id);
-    if (existing) {
-      this.workspaces.set(id, { ...existing, ...updates, updatedAt: Date.now() });
+  async markAssignmentDoneBySlackUser(prId: string, slackUserId: string): Promise<boolean> {
+    const assignments = await this.getAssignmentsForPr(prId);
+    const assignment = assignments.find(a => a.slackUserId === slackUserId && a.status !== 'DONE');
+    if (assignment) {
+      return await this.markAssignmentDone(assignment.id);
     }
+    return false;
   }
 
-  // Subscription operations
-  async upsertSubscription(subscription: any): Promise<void> {
-    this.subscriptions.set(subscription.workspaceId, {
-      ...subscription,
-      updatedAt: Date.now()
-    });
-  }
-
-  async getSubscription(workspaceId: string): Promise<any | undefined> {
-    return this.subscriptions.get(workspaceId);
-  }
-
-  async updateSubscription(workspaceId: string, updates: Partial<any>): Promise<void> {
-    const existing = this.subscriptions.get(workspaceId);
-    if (existing) {
-      this.subscriptions.set(workspaceId, {
-        ...existing,
-        ...updates,
-        updatedAt: Date.now()
-      });
-    }
-  }
-
-  // Usage tracking
-  async incrementUsage(workspaceId: string, month: string): Promise<void> {
-    const key = `${workspaceId}:${month}`;
-    const existing = this.usage.get(key);
-    if (existing) {
-      existing.prsProcessed += 1;
-      this.usage.set(key, existing);
-    } else {
-      this.usage.set(key, {
-        workspaceId,
-        month,
-        prsProcessed: 1,
-        limit: 50, // Default free limit
-        resetAt: new Date(`${month}-01`).setMonth(new Date(`${month}-01`).getMonth() + 1)
-      });
-    }
-  }
-
-  async getUsage(workspaceId: string, month: string): Promise<any | undefined> {
-    const key = `${workspaceId}:${month}`;
-    return this.usage.get(key);
-  }
-
-  async resetUsage(workspaceId: string, month: string): Promise<void> {
-    const key = `${workspaceId}:${month}`;
-    this.usage.delete(key);
-  }
-
-  // Audit logs
-  async addAuditLog(log: any): Promise<void> {
-    this.auditLogs.push({
-      ...log,
-      timestamp: Date.now()
-    });
-    // Keep only last 10000 logs in memory
-    if (this.auditLogs.length > 10000) {
-      this.auditLogs = this.auditLogs.slice(-10000);
-    }
+  async getAssignmentsBySlackUser(slackUserId: string): Promise<Assignment[]> {
+    return Array.from(this.assignments.values())
+      .filter(a => a.slackUserId === slackUserId && a.status !== 'DONE');
   }
 }
 

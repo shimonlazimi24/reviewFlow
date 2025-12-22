@@ -2,6 +2,8 @@
 import { App } from '@slack/bolt';
 import { db, Team, RepoMapping } from '../db/memoryDb';
 import { logger } from '../utils/logger';
+import { requireAdmin } from '../utils/permissions';
+import { checkWorkspaceLimit } from '../services/featureFlags';
 
 export function registerTeamHandlers(app: App) {
   // Helper to send response
@@ -43,7 +45,7 @@ export function registerTeamHandlers(app: App) {
       await requireAdmin(userId, client);
       const args = command.text?.trim().split(' ') || [];
       if (args.length < 2) {
-        await sendResponse(client, channelId, userId, 'Usage: `/create-team <team-name> <slack-channel-id>`\n\nExample: `/create-team "Frontend Team" C0123456789`', respond);
+        await sendResponse(client, channelId, userId, 'Usage: /create-team <team-name> <slack-channel-id>\n\nExample: /create-team "Frontend Team" C0123456789', respond);
         return;
       }
 
@@ -52,15 +54,16 @@ export function registerTeamHandlers(app: App) {
 
       // Check team limit
       const teams = await db.listTeams();
-      const limitCheck = await checkLimit('maxTeams', teams.length);
+      const slackTeamId = command.team_id;
+      const limitCheck = await checkWorkspaceLimit(slackTeamId, 'maxTeams', teams.length);
       if (!limitCheck.allowed) {
         await sendResponse(client, channelId, userId, `❌ Team limit exceeded. You have ${limitCheck.current} teams, maximum allowed: ${limitCheck.limit}.\n\nUpgrade to premium for unlimited teams.`, respond);
         return;
       }
 
-      const teamId = `team_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+      const newTeamId = `team_${Date.now()}_${Math.random().toString(16).slice(2)}`;
       const team: Team = {
-        id: teamId,
+        id: newTeamId,
         name: teamName,
         slackChannelId,
         createdAt: Date.now(),
@@ -69,7 +72,7 @@ export function registerTeamHandlers(app: App) {
 
       await db.addTeam(team);
 
-      await sendResponse(client, channelId, userId, `✅ Created team "${teamName}" (ID: ${teamId})\nChannel: <#${slackChannelId}>`, respond);
+      await sendResponse(client, channelId, userId, `✅ Created team "${teamName}" (ID: ${newTeamId})\nChannel: <#${slackChannelId}>`, respond);
     } catch (error) {
       logger.error('Error in /create-team command', error);
       await sendResponse(client, channelId, userId, `❌ Failed to create team: ${(error as Error).message}`, respond);
@@ -124,14 +127,14 @@ export function registerTeamHandlers(app: App) {
       // Verify team exists
       const team = await db.getTeam(teamId);
       if (!team) {
-        await sendResponse(client, channelId, userId, `❌ Team not found: ${teamId}\n\nUse `/list-teams` to see available teams.`, respond);
+        await sendResponse(client, channelId, userId, `❌ Team not found: ${teamId}\n\nUse /list-teams to see available teams.`, respond);
         return;
       }
 
       // Check if repo is already mapped
       const existing = await db.getRepoMapping(repoFullName);
       if (existing) {
-        await sendResponse(client, channelId, userId, `⚠️ Repository "${repoFullName}" is already mapped to team "${existing.teamId}".\n\nUse `/unmap-repo ${repoFullName}` to remove the mapping first.`, respond);
+        await sendResponse(client, channelId, userId, `⚠️ Repository "${repoFullName}" is already mapped to team "${existing.teamId}".\n\nUse /unmap-repo ${repoFullName} to remove the mapping first.`, respond);
         return;
       }
 
@@ -160,14 +163,14 @@ export function registerTeamHandlers(app: App) {
 
     try {
       const args = command.text?.trim();
-      const teamId = args || undefined;
+      const filterTeamId = args || undefined;
 
-      const repos = await db.listRepoMappings(teamId);
+      const repos = await db.listRepoMappings(filterTeamId);
 
       if (repos.length === 0) {
-        const message = teamId
-          ? `📋 No repositories mapped to team "${teamId}".\n\nUse `/map-repo` to map repositories.`
-          : '📋 No repositories mapped yet.\n\nUse `/map-repo` to map repositories to teams.';
+        const message = filterTeamId
+          ? `📋 No repositories mapped to team "${filterTeamId}".\n\nUse /map-repo to map repositories.`
+          : '📋 No repositories mapped yet.\n\nUse /map-repo to map repositories to teams.';
         await sendResponse(client, channelId, userId, message, respond);
         return;
       }
@@ -177,7 +180,7 @@ export function registerTeamHandlers(app: App) {
         return `*${mapping.repoFullName}* → Team: ${team?.name || mapping.teamId} (${mapping.teamId})`;
       }));
 
-      const header = teamId
+      const header = filterTeamId
         ? `*📦 Repositories for Team (${repos.length}):*`
         : `*📦 All Repository Mappings (${repos.length}):*`;
 
@@ -229,7 +232,7 @@ export function registerTeamHandlers(app: App) {
       await requireAdmin(userId, client);
       const args = command.text?.trim().split(' ') || [];
       if (args.length < 2) {
-        await sendResponse(client, channelId, userId, 'Usage: `/assign-to-team <slack-user-id> <team-id>`\n\nExample: `/assign-to-team U01234567 team_1234567890`\n\nUse `/list-teams` to find team IDs.', respond);
+        await sendResponse(client, channelId, userId, 'Usage: /assign-to-team <slack-user-id> <team-id>\n\nExample: /assign-to-team U01234567 team_1234567890\n\nUse /list-teams to find team IDs.', respond);
         return;
       }
 
@@ -247,7 +250,7 @@ export function registerTeamHandlers(app: App) {
       const member = members.find((m: any) => m.slackUserId === slackUserId);
 
       if (!member) {
-        await sendResponse(client, channelId, userId, `❌ Member not found: <@${slackUserId}>\n\nUse `/add-reviewer` to add them first.`, respond);
+        await sendResponse(client, channelId, userId, `❌ Member not found: <@${slackUserId}>\n\nUse /add-reviewer to add them first.`, respond);
         return;
       }
 

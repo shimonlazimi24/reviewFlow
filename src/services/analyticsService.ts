@@ -72,9 +72,9 @@ export class AnalyticsService {
 
       // Calculate metrics
       const totalPRs = allPRs.length;
-      const openPRs = allPRs.filter(p => p.status === 'OPEN').length;
-      const closedPRs = allPRs.filter(p => p.status === 'CLOSED').length;
-      const mergedPRs = allPRs.filter(p => p.status === 'MERGED').length;
+      const openPRs = allPRs.filter((p: PrRecord) => p.status === 'OPEN').length;
+      const closedPRs = allPRs.filter((p: PrRecord) => p.status === 'CLOSED').length;
+      const mergedPRs = allPRs.filter((p: PrRecord) => p.status === 'MERGED').length;
 
       // Calculate review times
       const completedAssignments = allAssignments.filter(a => a.status === 'DONE' && a.completedAt);
@@ -84,9 +84,9 @@ export class AnalyticsService {
         : 0;
 
       // Calculate waiting times
-      const waitingTimes = allPRs.map(pr => calculateWaitingTime(pr.createdAt));
+      const waitingTimes = allPRs.map((pr: PrRecord) => calculateWaitingTime(pr.createdAt));
       const averageWaitingTime = waitingTimes.length > 0
-        ? waitingTimes.reduce((sum, time) => sum + time, 0) / waitingTimes.length
+        ? waitingTimes.reduce((sum: number, time: number) => sum + time, 0) / waitingTimes.length
         : 0;
 
       const totalReviews = allAssignments.length;
@@ -118,15 +118,15 @@ export class AnalyticsService {
   async getTeamMetrics(teamId?: string): Promise<TeamMetrics> {
     try {
       const members = await db.listMembers(teamId);
-      const activeMembers = members.filter(m => m.isActive && !m.isUnavailable);
+      const activeMembers = members.filter((m: Member) => m.isActive && !m.isUnavailable);
       const openPRs = await db.listOpenPrs(teamId);
 
       // Get workload distribution
       const workloadDistribution = await Promise.all(
         members.map(async (member: Member) => {
           const assignments = await db.getOpenAssignmentsForMember(member.id);
-          const completedAssignments = assignments.filter(a => a.status === 'DONE');
-          const openReviews = assignments.filter(a => a.status !== 'DONE').length;
+          const completedAssignments = assignments.filter((a: Assignment) => a.status === 'DONE');
+          const openReviews = assignments.filter((a: Assignment) => a.status !== 'DONE').length;
 
           return {
             memberId: member.id,
@@ -150,9 +150,9 @@ export class AnalyticsService {
         ? reviewTimes.reduce((sum, time) => sum + time, 0) / reviewTimes.length
         : 0;
 
-      const waitingTimes = openPRs.map(pr => calculateWaitingTime(pr.createdAt));
+      const waitingTimes = openPRs.map((pr: PrRecord) => calculateWaitingTime(pr.createdAt));
       const averageWaitingTime = waitingTimes.length > 0
-        ? waitingTimes.reduce((sum, time) => sum + time, 0) / waitingTimes.length
+        ? waitingTimes.reduce((sum: number, time: number) => sum + time, 0) / waitingTimes.length
         : 0;
 
       // Get team name if teamId provided
@@ -168,7 +168,7 @@ export class AnalyticsService {
         memberCount: members.length,
         activeMemberCount: activeMembers.length,
         totalPRs: openPRs.length,
-        openPRs: openPRs.filter(p => p.status === 'OPEN').length,
+        openPRs: openPRs.filter((p: PrRecord) => p.status === 'OPEN').length,
         averageReviewTime,
         averageWaitingTime,
         workloadDistribution
@@ -208,9 +208,9 @@ export class AnalyticsService {
       );
 
       // Calculate overall review time (from first assignment to last completion)
-      const completedAssignments = assignments.filter(a => a.completedAt);
+      const completedAssignments = assignments.filter((a: Assignment) => a.completedAt);
       const reviewTime = completedAssignments.length > 0 && assignments.length > 0
-        ? Math.max(...completedAssignments.map(a => a.completedAt!)) - Math.min(...assignments.map(a => a.createdAt))
+        ? Math.max(...completedAssignments.map((a: Assignment) => a.completedAt!)) - Math.min(...assignments.map((a: Assignment) => a.createdAt))
         : undefined;
 
       return {

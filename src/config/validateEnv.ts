@@ -61,6 +61,23 @@ export function validateEnvironment(): void {
     }
   }
 
+  // Validate Polar billing config if any billing env vars are set
+  const hasPolarConfig = env.POLAR_ACCESS_TOKEN || env.POLAR_WEBHOOK_SECRET || env.POLAR_PRO_PRODUCT_ID;
+  if (hasPolarConfig) {
+    if (!env.POLAR_ACCESS_TOKEN) {
+      errors.push('POLAR_ACCESS_TOKEN is required when billing is enabled');
+    }
+    if (!env.POLAR_WEBHOOK_SECRET) {
+      errors.push('POLAR_WEBHOOK_SECRET is required when billing is enabled');
+    }
+    if (!env.POLAR_PRO_PRODUCT_ID && !env.POLAR_PRO_PRICE_ID) {
+      errors.push('POLAR_PRO_PRODUCT_ID or POLAR_PRO_PRICE_ID is required when billing is enabled');
+    }
+    if (!env.APP_BASE_URL) {
+      errors.push('APP_BASE_URL is required when billing is enabled');
+    }
+  }
+
   if (errors.length > 0) {
     logger.error('Environment validation failed:', { errors });
     throw new Error(`Environment validation failed:\n${errors.join('\n')}`);

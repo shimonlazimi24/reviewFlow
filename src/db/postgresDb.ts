@@ -1,6 +1,6 @@
 // PostgreSQL database implementation
 import { Pool, QueryResult } from 'pg';
-import { Member, PrRecord, Assignment, Role, PrStatus, PrSize, Stack } from './memoryDb';
+import { Member, PrRecord, Assignment, Role, PrStatus, PrSize, Stack, AssignmentStatus } from './memoryDb';
 
 export class PostgresDb {
   private pool: Pool;
@@ -263,12 +263,13 @@ export class PostgresDb {
         prId,
         memberId,
         createdAt: Date.now(),
+        status: 'ASSIGNED',
         slackUserId: member.slackUserId
       };
 
       await this.pool.query(
-        'INSERT INTO assignments (id, pr_id, member_id, created_at, slack_user_id) VALUES ($1, $2, $3, $4, $5)',
-        [assignment.id, assignment.prId, assignment.memberId, assignment.createdAt, assignment.slackUserId]
+        'INSERT INTO assignments (id, pr_id, member_id, created_at, status, slack_user_id) VALUES ($1, $2, $3, $4, $5, $6)',
+        [assignment.id, assignment.prId, assignment.memberId, assignment.createdAt, assignment.status, assignment.slackUserId]
       );
 
       assignments.push(assignment);

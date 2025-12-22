@@ -59,22 +59,22 @@ export function buildPrMessageBlocks(args: BuildPrMessageBlocksArgs): (Block | K
     },
     // Add detailed metadata if available
     ...(pr.changedFiles || pr.additions || pr.deletions ? [{
-      type: 'section',
+      type: 'section' as const,
       fields: [
         ...(pr.additions ? [{
-          type: 'mrkdwn',
+          type: 'mrkdwn' as const,
           text: `*Additions:*\n+${pr.additions}`
         }] : []),
         ...(pr.deletions ? [{
-          type: 'mrkdwn',
+          type: 'mrkdwn' as const,
           text: `*Deletions:*\n-${pr.deletions}`
         }] : []),
         ...(pr.changedFiles ? [{
-          type: 'mrkdwn',
+          type: 'mrkdwn' as const,
           text: `*Files Changed:*\n${pr.changedFiles}`
         }] : [])
-      ].filter(Boolean)
-    }] : []),
+      ].filter(Boolean) as Array<{ type: 'mrkdwn'; text: string }>
+    } as KnownBlock] : []),
     {
       type: 'section',
       text: {

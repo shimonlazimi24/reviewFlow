@@ -95,7 +95,7 @@ export async function checkUsageLimit(req: Request, res: Response, next: NextFun
  * Get required plan for a feature
  */
 function getRequiredPlan(feature: keyof FeatureLimits): string {
-  const planFeatures: Record<string, keyof FeatureLimits[]> = {
+  const planFeatures: Record<string, Array<keyof FeatureLimits>> = {
     PRO: ['jiraIntegration', 'autoBalance', 'reminders', 'advancedAnalytics'],
     TEAM: ['apiAccess', 'customWorkflows']
   };

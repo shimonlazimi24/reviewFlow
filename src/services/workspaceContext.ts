@@ -32,12 +32,14 @@ export async function loadWorkspaceContext(slackTeamId: string): Promise<Workspa
       workspace = {
         id: workspaceId,
         slackTeamId,
+        plan: 'free',
+        subscriptionStatus: 'active',
         createdAt: Date.now(),
         updatedAt: Date.now()
       };
       await db.addWorkspace(workspace);
       
-      // Create default FREE subscription
+      // Create default FREE subscription (legacy)
       await db.upsertSubscription({
         workspaceId,
         plan: SubscriptionPlan.FREE,
@@ -47,19 +49,28 @@ export async function loadWorkspaceContext(slackTeamId: string): Promise<Workspa
       });
     }
 
-    // Get subscription
+    // Get subscription (use workspace plan if available, otherwise legacy subscription)
     let subscription = await db.getSubscription(workspace.id);
     if (!subscription) {
-      // Create default FREE subscription
+      // Create default FREE subscription (legacy)
       subscription = {
         workspaceId: workspace.id,
-        plan: SubscriptionPlan.FREE,
-        status: SubscriptionStatus.ACTIVE,
+        plan: workspace.plan === 'pro' ? SubscriptionPlan.PRO : workspace.plan === 'enterprise' ? SubscriptionPlan.ENTERPRISE : SubscriptionPlan.FREE,
+        status: workspace.subscriptionStatus === 'active' ? SubscriptionStatus.ACTIVE : SubscriptionStatus.CANCELED,
         createdAt: Date.now(),
         updatedAt: Date.now()
       };
       await db.upsertSubscription(subscription);
     }
+    
+    // Use workspace plan if available (new billing model)
+    const plan = workspace.plan === 'pro' ? SubscriptionPlan.PRO : 
+                 workspace.plan === 'enterprise' ? SubscriptionPlan.ENTERPRISE : 
+                 SubscriptionPlan.FREE;
+    const status = workspace.subscriptionStatus === 'active' ? SubscriptionStatus.ACTIVE :
+                   workspace.subscriptionStatus === 'canceled' ? SubscriptionStatus.CANCELED :
+                   workspace.subscriptionStatus === 'past_due' ? SubscriptionStatus.PAST_DUE :
+                   SubscriptionStatus.ACTIVE;
 
     // Get current month usage
     const now = new Date();
@@ -67,22 +78,23 @@ export async function loadWorkspaceContext(slackTeamId: string): Promise<Workspa
     let usage = await db.getUsage(workspace.id, month);
     
     if (!usage) {
+      const subscriptionPlan = subscription.plan as SubscriptionPlan;
       usage = {
         workspaceId: workspace.id,
         month,
         prsProcessed: 0,
-        limit: PLAN_LIMITS[subscription.plan].maxPRsPerMonth,
+        limit: PLAN_LIMITS[subscriptionPlan].maxPRsPerMonth,
         resetAt: new Date(now.getFullYear(), now.getMonth() + 1, 1).getTime()
       };
     }
 
-    const limits = PLAN_LIMITS[subscription.plan];
+    const limits = PLAN_LIMITS[plan];
 
     return {
       workspaceId: workspace.id,
       slackTeamId: workspace.slackTeamId,
-      plan: subscription.plan,
-      status: subscription.status,
+      plan,
+      status,
       limits,
       usage: {
         prsProcessed: usage.prsProcessed,
@@ -90,7 +102,7 @@ export async function loadWorkspaceContext(slackTeamId: string): Promise<Workspa
         resetAt: usage.resetAt
       },
       githubInstallationId: workspace.githubInstallationId,
-      currentPeriodEnd: subscription.currentPeriodEnd
+      currentPeriodEnd: workspace.currentPeriodEnd || subscription.currentPeriodEnd
     };
   } catch (error) {
     logger.error('Failed to load workspace context', error);
