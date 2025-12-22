@@ -332,5 +332,203 @@ export function registerSlackHandlers(app: App) {
       });
     }
   });
+
+  // Admin: Add team member
+  app.command('/add-reviewer', async ({ ack, command, client, respond }) => {
+    await ack();
+
+    try {
+      const text = command.text?.trim() || '';
+      const parts = text.split(' ');
+      
+      if (parts.length < 3) {
+        await respond({
+          text: 'Usage: `/add-reviewer <slack-user-id> <github-username> <role>`\n\nRoles: FE (Frontend), BE (Backend), FS (Full Stack)\n\nExample: `/add-reviewer U01234567 alice FE`',
+          response_type: 'ephemeral'
+        });
+        return;
+      }
+
+      const [slackUserId, githubUsername, role] = parts;
+      const validRoles: Array<'FE' | 'BE' | 'FS'> = ['FE', 'BE', 'FS'];
+      
+      if (!validRoles.includes(role as any)) {
+        await respond({
+          text: `❌ Invalid role. Must be one of: ${validRoles.join(', ')}`,
+          response_type: 'ephemeral'
+        });
+        return;
+      }
+
+      // Check if member already exists
+      const existing = db.listMembers().find(m => m.slackUserId === slackUserId);
+      
+      if (existing) {
+        // Update existing member
+        db.updateMember(existing.id, {
+          githubUsernames: [...new Set([...existing.githubUsernames, githubUsername])],
+          roles: existing.roles.includes(role as any) ? existing.roles : [...existing.roles, role as any]
+        });
+        await respond({
+          text: `✅ Updated reviewer: <@${slackUserId}> (${githubUsername}) - ${role}`,
+          response_type: 'ephemeral'
+        });
+      } else {
+        // Create new member
+        const memberId = `member_${slackUserId}`;
+        db.addMember({
+          id: memberId,
+          slackUserId,
+          githubUsernames: [githubUsername],
+          roles: [role as 'FE' | 'BE' | 'FS'],
+          weight: 1.0,
+          isActive: true
+        });
+        await respond({
+          text: `✅ Added reviewer: <@${slackUserId}> (${githubUsername}) - ${role}`,
+          response_type: 'ephemeral'
+        });
+      }
+    } catch (error) {
+      console.error('Error in /add-reviewer command:', error);
+      await respond({
+        text: `❌ Failed to add reviewer: ${(error as Error).message}`,
+        response_type: 'ephemeral'
+      });
+    }
+  });
+
+  // Admin: List all team members
+  app.command('/list-reviewers', async ({ ack, command, respond }) => {
+    await ack();
+
+    try {
+      const members = db.listMembers();
+      
+      if (members.length === 0) {
+        await respond({
+          text: '📋 No reviewers configured yet.\n\nUse `/add-reviewer` to add team members.',
+          response_type: 'ephemeral'
+        });
+        return;
+      }
+
+      const text = members
+        .map(m => {
+          const roles = m.roles.join(', ');
+          const github = m.githubUsernames.join(', ');
+          const status = m.isActive ? '✅' : '❌';
+          return `${status} <@${m.slackUserId}> - ${github} (${roles})`;
+        })
+        .join('\n');
+
+      await respond({
+        text: `📋 *Team Reviewers (${members.length}):*\n\n${text}`,
+        response_type: 'ephemeral'
+      });
+    } catch (error) {
+      console.error('Error in /list-reviewers command:', error);
+      await respond({
+        text: '❌ An error occurred.',
+        response_type: 'ephemeral'
+      });
+    }
+  });
+
+  // Admin: Remove team member
+  app.command('/remove-reviewer', async ({ ack, command, respond }) => {
+    await ack();
+
+    try {
+      const text = command.text?.trim() || '';
+      const slackUserId = text.trim();
+      
+      if (!slackUserId) {
+        await respond({
+          text: 'Usage: `/remove-reviewer <slack-user-id>`\n\nExample: `/remove-reviewer U01234567`',
+          response_type: 'ephemeral'
+        });
+        return;
+      }
+
+      const members = db.listMembers();
+      const member = members.find(m => m.slackUserId === slackUserId);
+      
+      if (!member) {
+        await respond({
+          text: `❌ Reviewer not found: <@${slackUserId}>`,
+          response_type: 'ephemeral'
+        });
+        return;
+      }
+
+      // Deactivate instead of deleting (preserve history)
+      db.updateMember(member.id, { isActive: false });
+      
+      await respond({
+        text: `✅ Removed reviewer: <@${slackUserId}>`,
+        response_type: 'ephemeral'
+      });
+    } catch (error) {
+      console.error('Error in /remove-reviewer command:', error);
+      await respond({
+        text: `❌ Failed to remove reviewer: ${(error as Error).message}`,
+        response_type: 'ephemeral'
+      });
+    }
+  });
+
+  // Admin: Set reviewer weight (for load balancing)
+  app.command('/set-weight', async ({ ack, command, respond }) => {
+    await ack();
+
+    try {
+      const text = command.text?.trim() || '';
+      const parts = text.split(' ');
+      
+      if (parts.length < 2) {
+        await respond({
+          text: 'Usage: `/set-weight <slack-user-id> <weight>`\n\nWeight: 0.5-2.0 (lower = more assignments)\n\nExample: `/set-weight U01234567 0.8`',
+          response_type: 'ephemeral'
+        });
+        return;
+      }
+
+      const [slackUserId, weightStr] = parts;
+      const weight = parseFloat(weightStr);
+      
+      if (isNaN(weight) || weight < 0.1 || weight > 2.0) {
+        await respond({
+          text: '❌ Weight must be a number between 0.1 and 2.0',
+          response_type: 'ephemeral'
+        });
+        return;
+      }
+
+      const members = db.listMembers();
+      const member = members.find(m => m.slackUserId === slackUserId);
+      
+      if (!member) {
+        await respond({
+          text: `❌ Reviewer not found: <@${slackUserId}>`,
+          response_type: 'ephemeral'
+        });
+        return;
+      }
+
+      db.updateMember(member.id, { weight });
+      
+      await respond({
+        text: `✅ Set weight for <@${slackUserId}> to ${weight}`,
+        response_type: 'ephemeral'
+      });
+    } catch (error) {
+      console.error('Error in /set-weight command:', error);
+      await respond({
+        text: `❌ Failed to set weight: ${(error as Error).message}`,
+        response_type: 'ephemeral'
+      });
+    }
+  });
 }
 
