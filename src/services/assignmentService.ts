@@ -25,14 +25,14 @@ export async function pickReviewers(args: {
 
   const candidates = await Promise.all(
     members
-      .filter(m => m.isActive)
-      .filter(m => !m.githubUsernames.includes(authorGithub)) // לא להקצות למחבר
-      .filter(m => {
+      .filter((m: Member) => m.isActive)
+      .filter((m: Member) => !m.githubUsernames.includes(authorGithub)) // לא להקצות למחבר
+      .filter((m: Member) => {
         if (stack === 'MIXED') return true;
         if (m.roles.includes('FS')) return true;
         return m.roles.includes(stack);
       })
-      .map(async m => {
+      .map(async (m: Member) => {
         const open = await db.getOpenAssignmentsCount(m.id);
         return {
           m,

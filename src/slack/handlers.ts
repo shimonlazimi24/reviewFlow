@@ -27,8 +27,8 @@ export function registerSlackHandlers(app: App) {
         if (pr && pr.slackMessageTs) {
           const assignments = await db.getAssignmentsForPr(prId);
           const reviewerPromises = assignments
-            .filter(a => !a.completedAt)
-            .map(a => db.getMember(a.memberId));
+            .filter((a: any) => !a.completedAt)
+            .map((a: any) => db.getMember(a.memberId));
           const reviewerResults = await Promise.all(reviewerPromises);
           const reviewers = reviewerResults.filter((m): m is NonNullable<typeof m> => m !== undefined);
 
@@ -115,7 +115,7 @@ export function registerSlackHandlers(app: App) {
         return;
       }
 
-      const prsPromises = assignments.map(a => db.getPr(a.prId));
+      const prsPromises = assignments.map((a: any) => db.getPr(a.prId));
       const prsResults = await Promise.all(prsPromises);
       const prs = prsResults.filter((pr): pr is NonNullable<typeof pr> => pr !== undefined && pr.status === 'OPEN');
 
@@ -226,8 +226,8 @@ export function registerSlackHandlers(app: App) {
       if (pr.slackMessageTs) {
         const assignments = await db.getAssignmentsForPr(prId);
         const reviewerPromises = assignments
-          .filter(a => !a.completedAt)
-          .map(a => db.getMember(a.memberId));
+          .filter((a: any) => !a.completedAt)
+          .map((a: any) => db.getMember(a.memberId));
         const reviewerResults = await Promise.all(reviewerPromises);
         const reviewers = reviewerResults.filter((m): m is NonNullable<typeof m> => m !== undefined);
 
@@ -358,7 +358,7 @@ export function registerSlackHandlers(app: App) {
 
       // Check if member already exists
       const members = await db.listMembers();
-      const existing = members.find(m => m.slackUserId === slackUserId);
+      const existing = members.find((m: any) => m.slackUserId === slackUserId);
       
       if (existing) {
         // Update existing member
@@ -411,7 +411,7 @@ export function registerSlackHandlers(app: App) {
       }
 
       const text = members
-        .map(m => {
+        .map((m: any) => {
           const roles = m.roles.join(', ');
           const github = m.githubUsernames.join(', ');
           const status = m.isActive ? '✅' : '❌';
@@ -449,7 +449,7 @@ export function registerSlackHandlers(app: App) {
       }
 
       const members = await db.listMembers();
-      const member = members.find(m => m.slackUserId === slackUserId);
+      const member = members.find((m: any) => m.slackUserId === slackUserId);
       
       if (!member) {
         await respond({
@@ -503,7 +503,7 @@ export function registerSlackHandlers(app: App) {
       }
 
       const members = await db.listMembers();
-      const member = members.find(m => m.slackUserId === slackUserId);
+      const member = members.find((m: any) => m.slackUserId === slackUserId);
       
       if (!member) {
         await respond({

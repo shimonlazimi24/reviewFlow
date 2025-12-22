@@ -99,8 +99,8 @@ export function githubWebhookHandlerFactory(args: { slackApp: App }) {
         // Get current assignments for display
         const assignments = await db.getAssignmentsForPr(record.id);
         const reviewerPromises = assignments
-          .filter(a => !a.completedAt)
-          .map(a => db.getMember(a.memberId));
+          .filter((a: any) => !a.completedAt)
+          .map((a: any) => db.getMember(a.memberId));
         const reviewerResults = await Promise.all(reviewerPromises);
         const reviewers = reviewerResults.filter((m): m is NonNullable<typeof m> => m !== undefined);
 
@@ -172,7 +172,7 @@ export function githubWebhookHandlerFactory(args: { slackApp: App }) {
           if (existing.slackMessageTs) {
             try {
               const assignments = await db.getAssignmentsForPr(existing.id);
-              const reviewerPromises = assignments.map(a => db.getMember(a.memberId));
+              const reviewerPromises = assignments.map((a: any) => db.getMember(a.memberId));
               const reviewerResults = await Promise.all(reviewerPromises);
               const reviewers = reviewerResults.filter((m): m is NonNullable<typeof m> => m !== undefined);
 
