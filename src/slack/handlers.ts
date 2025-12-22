@@ -147,20 +147,43 @@ export function registerSlackHandlers(app: App) {
         return;
       }
 
-      const prsPromises = assignments.map((a: any) => db.getPr(a.prId));
-      const prsResults = await Promise.all(prsPromises);
-      const prs = prsResults.filter((pr): pr is NonNullable<typeof pr> => pr !== undefined && pr.status === 'OPEN');
+      // Get PRs and calculate waiting times
+      const assignmentsWithPrs = await Promise.all(
+        assignments.map(async (a: Assignment) => {
+          const pr = await db.getPr(a.prId);
+          if (!pr || pr.status !== 'OPEN') return null;
+          
+          const waitingTime = calculateWaitingTime(a.createdAt);
+          return {
+            assignment: a,
+            pr,
+            waitingTime
+          };
+        })
+      );
 
-      if (prs.length === 0) {
+      const validAssignments = assignmentsWithPrs.filter((item): item is NonNullable<typeof item> => item !== null);
+
+      if (validAssignments.length === 0) {
         await sendResponse('✅ You have no pending reviews!');
         return;
       }
 
-      const text = prs
-        .map(pr => `• <${pr.url}|PR #${pr.number}: ${pr.title}> (${pr.repoFullName})`)
-        .join('\n');
+      // Sort by waiting time (oldest first)
+      validAssignments.sort((a, b) => b.waitingTime - a.waitingTime);
 
-      await sendResponse(`📋 *Your Pending Reviews (${prs.length}):*\n\n${text}`);
+      const text = validAssignments
+        .map(({ pr, assignment, waitingTime }) => {
+          const statusEmoji = assignment.status === 'IN_PROGRESS' ? '🔄' : '📋';
+          const waitingStr = formatWaitingTime(waitingTime);
+          return `${statusEmoji} <${pr.url}|PR #${pr.number}: ${pr.title}>\n   ${pr.repoFullName} | ${waitingStr} | Status: ${assignment.status}`;
+        })
+        .join('\n\n');
+
+      const totalWaiting = validAssignments.reduce((sum, item) => sum + item.waitingTime, 0);
+      const avgWaiting = formatWaitingTime(totalWaiting / validAssignments.length);
+
+      await sendResponse(`📋 *Your Pending Reviews (${validAssignments.length}):*\n\n${text}\n\n*Average waiting time:* ${avgWaiting}`);
     } catch (error) {
       console.error('Error in /my-reviews command:', error);
       try {
@@ -848,6 +871,167 @@ export function registerSlackHandlers(app: App) {
       if (actionBody.user?.id && actionBody.channel?.id) {
         await sendResponse(client, actionBody.channel.id, actionBody.user.id, `❌ Failed to reassign PR: ${(error as Error).message}`, respond);
       }
+    }
+  });
+
+  // Enhanced /cr command (my reviews and team queue)
+  app.command('/cr', async ({ ack, command, client, respond }) => {
+    await ack();
+    const userId = command.user_id;
+    const channelId = command.channel_id;
+    const args = command.text?.trim().toLowerCase() || '';
+
+    // Route to appropriate handler
+    if (args === 'my' || args === '') {
+      // Your reviews
+      try {
+        const assignments = await db.getAssignmentsBySlackUser(userId);
+
+        if (assignments.length === 0) {
+          await sendResponse(client, channelId, userId, '✅ You have no pending reviews!', respond);
+          return;
+        }
+
+        const assignmentsWithPrs = await Promise.all(
+          assignments.map(async (a: Assignment) => {
+            const pr = await db.getPr(a.prId);
+            if (!pr || pr.status !== 'OPEN') return null;
+            
+            const waitingTime = calculateWaitingTime(a.createdAt);
+            return {
+              assignment: a,
+              pr,
+              waitingTime
+            };
+          })
+        );
+
+        const validAssignments = assignmentsWithPrs.filter((item): item is NonNullable<typeof item> => item !== null);
+
+        if (validAssignments.length === 0) {
+          await sendResponse(client, channelId, userId, '✅ You have no pending reviews!', respond);
+          return;
+        }
+
+        validAssignments.sort((a, b) => b.waitingTime - a.waitingTime);
+
+        const text = validAssignments
+          .map(({ pr, assignment, waitingTime }) => {
+            const statusEmoji = assignment.status === 'IN_PROGRESS' ? '🔄' : '📋';
+            const waitingStr = formatWaitingTime(waitingTime);
+            return `${statusEmoji} <${pr.url}|PR #${pr.number}: ${pr.title}>\n   ${pr.repoFullName} | ${waitingStr} | Status: ${assignment.status}`;
+          })
+          .join('\n\n');
+
+        const totalWaiting = validAssignments.reduce((sum, item) => sum + item.waitingTime, 0);
+        const avgWaiting = formatWaitingTime(totalWaiting / validAssignments.length);
+
+        await sendResponse(
+          client,
+          channelId,
+          userId,
+          `📋 *Your Pending Reviews (${validAssignments.length}):*\n\n${text}\n\n*Average waiting time:* ${avgWaiting}`,
+          respond
+        );
+      } catch (error) {
+        console.error('Error in /cr my command:', error);
+        await sendResponse(client, channelId, userId, `❌ Failed to get reviews: ${(error as Error).message}`, respond);
+      }
+    } else if (args === 'team') {
+      // Team-wide review queue
+      try {
+        const members = await db.listMembers();
+        const activeMembers = members.filter((m: Member) => m.isActive && !m.isUnavailable);
+
+        if (activeMembers.length === 0) {
+          await sendResponse(client, channelId, userId, '❌ No active team members found.', respond);
+          return;
+        }
+
+        // Get all open assignments with PRs
+        const allAssignments: Array<{
+          assignment: Assignment;
+          pr: PrRecord;
+          member: Member;
+          waitingTime: number;
+        }> = [];
+
+        for (const member of activeMembers) {
+          const assignments = await db.getOpenAssignmentsForMember(member.id);
+          
+          for (const assignment of assignments) {
+            const pr = await db.getPr(assignment.prId);
+            if (pr && pr.status === 'OPEN') {
+              const waitingTime = calculateWaitingTime(assignment.createdAt);
+              allAssignments.push({
+                assignment,
+                pr,
+                member,
+                waitingTime
+              });
+            }
+          }
+        }
+
+        if (allAssignments.length === 0) {
+          await sendResponse(client, channelId, userId, '✅ No pending reviews in the team!', respond);
+          return;
+        }
+
+        // Sort by waiting time (oldest first)
+        allAssignments.sort((a, b) => b.waitingTime - a.waitingTime);
+
+        // Group by reviewer
+        const byReviewer = new Map<string, typeof allAssignments>();
+        for (const item of allAssignments) {
+          const key = item.member.slackUserId;
+          if (!byReviewer.has(key)) {
+            byReviewer.set(key, []);
+          }
+          byReviewer.get(key)!.push(item);
+        }
+
+        // Build team queue message
+        let text = `📊 *Team Review Queue (${allAssignments.length} total):*\n\n`;
+
+        for (const [slackUserId, items] of byReviewer.entries()) {
+          const member = items[0].member;
+          const github = member.githubUsernames[0] || 'N/A';
+          text += `*<@${slackUserId}> (${github}) - ${items.length} review${items.length > 1 ? 's' : ''}:*\n`;
+
+          for (const { pr, assignment, waitingTime } of items) {
+            const statusEmoji = assignment.status === 'IN_PROGRESS' ? '🔄' : '📋';
+            const waitingStr = formatWaitingTime(waitingTime);
+            text += `  ${statusEmoji} <${pr.url}|PR #${pr.number}: ${pr.title}>\n`;
+            text += `     ${pr.repoFullName} | ${waitingStr} | ${assignment.status}\n`;
+          }
+          text += '\n';
+        }
+
+        // Add summary
+        const totalWaiting = allAssignments.reduce((sum, item) => sum + item.waitingTime, 0);
+        const avgWaiting = formatWaitingTime(totalWaiting / allAssignments.length);
+        const oldest = allAssignments[0];
+        const oldestWaiting = formatWaitingTime(oldest.waitingTime);
+
+        text += `*Summary:*\n`;
+        text += `• Total reviews: ${allAssignments.length}\n`;
+        text += `• Average waiting: ${avgWaiting}\n`;
+        text += `• Oldest review: ${oldestWaiting} (<${oldest.pr.url}|PR #${oldest.pr.number}>)`;
+
+        await sendResponse(client, channelId, userId, text, respond);
+      } catch (error) {
+        console.error('Error in /cr team command:', error);
+        await sendResponse(client, channelId, userId, `❌ Failed to get team queue: ${(error as Error).message}`, respond);
+      }
+    } else {
+      await sendResponse(
+        client,
+        channelId,
+        userId,
+        'Usage: `/cr my` - Your reviews\n`/cr team` - Team review queue',
+        respond
+      );
     }
   });
 }
