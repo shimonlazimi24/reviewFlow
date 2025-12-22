@@ -6,8 +6,11 @@ import { env, jiraEnabled } from '../config/env';
 import { pickReviewers } from '../services/assignmentService';
 import { formatWaitingTime, calculateWaitingTime } from '../utils/time';
 import { buildSettingsModal, buildAddMemberModal, buildEditMemberModal } from './modals';
+import { registerTeamHandlers } from './teamHandlers';
 
 export function registerSlackHandlers(app: App) {
+  // Register team management handlers
+  registerTeamHandlers(app);
   // Helper to send response (works in DMs and channels)
   const sendResponse = async (client: any, channelId: string, userId: string, text: string, respond: any) => {
     try {

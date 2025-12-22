@@ -5,6 +5,21 @@ export type PrStatus = 'OPEN' | 'CLOSED' | 'MERGED';
 export type PrSize = 'SMALL' | 'MEDIUM' | 'LARGE';
 export type Stack = 'FE' | 'BE' | 'MIXED';
 
+export interface Team {
+  id: string;
+  name: string;
+  slackChannelId: string; // Default channel for team notifications
+  createdAt: number;
+  isActive: boolean;
+}
+
+export interface RepoMapping {
+  id: string;
+  teamId: string;
+  repoFullName: string; // e.g., "org/repo"
+  createdAt: number;
+}
+
 export interface Member {
   id: string;
   slackUserId: string;
@@ -13,6 +28,7 @@ export interface Member {
   weight: number; // 0.0 to 1.0, affects assignment priority
   isActive: boolean;
   isUnavailable: boolean; // true if sick, on vacation, etc.
+  teamId?: string; // Optional: associate member with a team
 }
 
 export interface PrRecord {
@@ -29,6 +45,7 @@ export interface PrRecord {
   jiraIssueKey?: string;
   slackChannelId: string;
   slackMessageTs?: string;
+  teamId?: string; // Optional: associate PR with a team
   // Enhanced metadata
   additions?: number;
   deletions?: number;
@@ -48,8 +65,10 @@ export interface Assignment {
   slackUserId?: string; // for quick lookup
 }
 
-class MemoryDb {
+class MemoryDb implements IDatabase {
   private members: Map<string, Member> = new Map();
+  private teams: Map<string, Team> = new Map();
+  private repoMappings: Map<string, RepoMapping> = new Map(); // key: repoFullName
   private prs: Map<string, PrRecord> = new Map();
   private assignments: Map<string, Assignment> = new Map();
   private prByRepoAndNumber: Map<string, PrRecord> = new Map(); // key: "repo/number"
@@ -68,8 +87,12 @@ class MemoryDb {
     return this.members.get(id);
   }
 
-  async listMembers(): Promise<Member[]> {
-    return Array.from(this.members.values());
+  async listMembers(teamId?: string): Promise<Member[]> {
+    const all = Array.from(this.members.values());
+    if (teamId) {
+      return all.filter(m => m.teamId === teamId);
+    }
+    return all;
   }
 
   async updateMember(id: string, updates: Partial<Member>): Promise<void> {
@@ -77,6 +100,12 @@ class MemoryDb {
     if (existing) {
       this.members.set(id, { ...existing, ...updates });
     }
+  }
+
+  async removeMember(id: string): Promise<void> {
+    this.members.delete(id);
+    // Also remove assignments related to this member
+    this.assignments = new Map(Array.from(this.assignments.entries()).filter(([, a]) => a.memberId !== id));
   }
 
   async init(): Promise<void> {
@@ -110,8 +139,62 @@ class MemoryDb {
     return this.prs.get(id);
   }
 
-  async listOpenPrs(): Promise<PrRecord[]> {
-    return Array.from(this.prs.values()).filter(p => p.status === 'OPEN');
+  async listOpenPrs(teamId?: string): Promise<PrRecord[]> {
+    const all = Array.from(this.prs.values()).filter(p => p.status === 'OPEN');
+    if (teamId) {
+      return all.filter(p => p.teamId === teamId);
+    }
+    return all;
+  }
+
+  // Team operations
+  async addTeam(team: Team): Promise<void> {
+    this.teams.set(team.id, team);
+  }
+
+  async getTeam(id: string): Promise<Team | undefined> {
+    return this.teams.get(id);
+  }
+
+  async listTeams(): Promise<Team[]> {
+    return Array.from(this.teams.values());
+  }
+
+  async updateTeam(id: string, updates: Partial<Team>): Promise<void> {
+    const existing = this.teams.get(id);
+    if (existing) {
+      this.teams.set(id, { ...existing, ...updates });
+    }
+  }
+
+  async removeTeam(id: string): Promise<void> {
+    this.teams.delete(id);
+    // Optionally remove team members and repo mappings
+    // For now, we'll leave them orphaned (teamId will be undefined)
+  }
+
+  // Repo mapping operations
+  async addRepoMapping(mapping: RepoMapping): Promise<void> {
+    this.repoMappings.set(mapping.repoFullName, mapping);
+  }
+
+  async getRepoMapping(repoFullName: string): Promise<RepoMapping | undefined> {
+    return this.repoMappings.get(repoFullName);
+  }
+
+  async listRepoMappings(teamId?: string): Promise<RepoMapping[]> {
+    const all = Array.from(this.repoMappings.values());
+    if (teamId) {
+      return all.filter(m => m.teamId === teamId);
+    }
+    return all;
+  }
+
+  async removeRepoMapping(id: string): Promise<void> {
+    const mapping = Array.from(this.repoMappings.values()).find(m => m.id === id);
+    if (mapping) {
+      this.repoMappings.delete(mapping.repoFullName);
+    }
   }
 
   // Assignment operations (async for compatibility with PostgreSQL)
@@ -129,6 +212,7 @@ class MemoryDb {
         prId,
         memberId,
         createdAt: Date.now(),
+        status: 'ASSIGNED', // Default status
         slackUserId: member.slackUserId
       };
       this.assignments.set(assignment.id, assignment);
@@ -175,7 +259,7 @@ class MemoryDb {
 
   async markAssignmentDoneBySlackUser(prId: string, slackUserId: string): Promise<boolean> {
     const assignments = await this.getAssignmentsForPr(prId);
-    const assignment = assignments.find(a => a.slackUserId === slackUserId && !a.completedAt);
+    const assignment = assignments.find(a => a.slackUserId === slackUserId && a.status !== 'DONE');
     if (assignment) {
       return await this.markAssignmentDone(assignment.id);
     }
@@ -184,7 +268,19 @@ class MemoryDb {
 
   async getAssignmentsBySlackUser(slackUserId: string): Promise<Assignment[]> {
     return Array.from(this.assignments.values())
-      .filter(a => a.slackUserId === slackUserId && !a.completedAt);
+      .filter(a => a.slackUserId === slackUserId && a.status !== 'DONE');
+  }
+
+  async updateAssignmentStatus(assignmentId: string, status: AssignmentStatus): Promise<boolean> {
+    const assignment = this.assignments.get(assignmentId);
+    if (assignment) {
+      assignment.status = status;
+      if (status === 'DONE' && !assignment.completedAt) {
+        assignment.completedAt = Date.now();
+      }
+      return true;
+    }
+    return false;
   }
 }
 

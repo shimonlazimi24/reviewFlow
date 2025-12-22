@@ -58,6 +58,10 @@ export function githubWebhookHandlerFactory(args: { slackApp: App }) {
       const url = String(pr.html_url);
             const authorGithub = String(pr.user?.login ?? 'unknown');
 
+            // Find team for this repo
+            const repoMapping = await db.getRepoMapping(repoFullName);
+            const teamId = repoMapping?.teamId;
+
             let issueKey =
               extractJiraIssueKey(String(pr.head?.ref ?? '')) ||
               extractJiraIssueKey(title) ||
@@ -71,6 +75,15 @@ export function githubWebhookHandlerFactory(args: { slackApp: App }) {
       if (['opened', 'ready_for_review', 'reopened'].includes(action)) {
         const existing = await db.findPr(repoFullName, number);
 
+        // Determine channel - use team channel if available, otherwise default
+        let slackChannelId = env.SLACK_DEFAULT_CHANNEL_ID;
+        if (teamId) {
+          const team = await db.getTeam(teamId);
+          if (team?.slackChannelId) {
+            slackChannelId = team.slackChannelId;
+          }
+        }
+
         const record = await db.upsertPr({
           id: existing?.id ?? prId(),
           repoFullName,
@@ -78,12 +91,13 @@ export function githubWebhookHandlerFactory(args: { slackApp: App }) {
           title,
           url,
           authorGithub,
+          teamId,
           createdAt: existing?.createdAt ?? Date.now(),
           status: 'OPEN',
           size,
           stack,
           jiraIssueKey: issueKey,
-          slackChannelId: existing?.slackChannelId ?? env.SLACK_DEFAULT_CHANNEL_ID,
+          slackChannelId: existing?.slackChannelId ?? slackChannelId,
           slackMessageTs: existing?.slackMessageTs,
           // Enhanced metadata
           additions: prMetadata.additions,
@@ -92,13 +106,14 @@ export function githubWebhookHandlerFactory(args: { slackApp: App }) {
           totalChanges: prMetadata.totalChanges
         });
 
-        // Only create new assignments if this is a new PR
-        if (!existing) {
-          const reviewers = await pickReviewers({
-            stack: record.stack === 'MIXED' ? 'MIXED' : record.stack,
-            requiredReviewers: 1,
-            authorGithub: record.authorGithub
-          });
+                // Only create new assignments if this is a new PR
+                if (!existing) {
+                  const reviewers = await pickReviewers({
+                    stack: record.stack === 'MIXED' ? 'MIXED' : record.stack,
+                    requiredReviewers: 1,
+                    authorGithub: record.authorGithub,
+                    teamId: record.teamId
+                  });
 
           if (reviewers.length > 0) {
             await db.createAssignments(record.id, reviewers.map(r => r.id));

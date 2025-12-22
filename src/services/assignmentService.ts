@@ -20,9 +20,10 @@ export async function pickReviewers(args: {
   requiredReviewers: number;
   authorGithub: string;
   excludeMemberIds?: string[]; // Optional: exclude specific members (e.g., for reassignment)
+  teamId?: string; // Optional: filter by team
 }): Promise<Member[]> {
-  const { stack, requiredReviewers, authorGithub, excludeMemberIds = [] } = args;
-  const members = await db.listMembers();
+  const { stack, requiredReviewers, authorGithub, excludeMemberIds = [], teamId } = args;
+  const members = await db.listMembers(teamId);
 
   const candidates = await Promise.all(
     members
