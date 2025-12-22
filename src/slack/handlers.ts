@@ -1,4 +1,4 @@
-import { App, BlockAction, ButtonAction, SlashCommand, ViewSubmission } from '@slack/bolt';
+import { App, BlockAction, ButtonAction, SlashCommand } from '@slack/bolt';
 import { db, Member, Role, PrRecord, Assignment } from '../db/memoryDb';
 import { buildPrMessageBlocks } from './blocks';
 import { JiraService } from '../services/jiraService';
