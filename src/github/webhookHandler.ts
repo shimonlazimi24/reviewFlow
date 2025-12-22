@@ -59,11 +59,46 @@ export function githubWebhookHandlerFactory(args: { slackApp: App }) {
       const number = Number(pr.number);
       const title = String(pr.title);
       const url = String(pr.html_url);
-            const authorGithub = String(pr.user?.login ?? 'unknown');
+      const authorGithub = String(pr.user?.login ?? 'unknown');
 
-            // Find team for this repo
-            const repoMapping = await db.getRepoMapping(repoFullName);
-            const teamId = repoMapping?.teamId;
+      // Extract installation ID from webhook (if using GitHub App)
+      const installationId = (req.body as any)?.installation?.id;
+      
+      // Load workspace context
+      // TODO: Map installationId to workspaceId via database
+      // For now, use default channel ID as team identifier
+      const defaultTeamId = env.SLACK_DEFAULT_CHANNEL_ID;
+      const context = await loadWorkspaceContext(defaultTeamId);
+      
+      // Check usage limits
+      if (isUsageLimitExceeded(context)) {
+        logger.warn('Usage limit exceeded for workspace', {
+          workspaceId: context.workspaceId,
+          usage: context.usage
+        });
+        return res.status(429).json({
+          error: 'Usage limit exceeded',
+          message: 'Monthly PR limit reached. Please upgrade your plan.'
+        });
+      }
+
+      // Validate GitHub installation if required
+      if (installationId && context.githubInstallationId) {
+        if (String(installationId) !== String(context.githubInstallationId)) {
+          logger.warn('GitHub installation ID mismatch', {
+            expected: context.githubInstallationId,
+            received: installationId
+          });
+          return res.status(403).json({
+            error: 'Invalid installation',
+            message: 'This repository is not authorized for this workspace.'
+          });
+        }
+      }
+
+      // Find team for this repo
+      const repoMapping = await db.getRepoMapping(repoFullName);
+      const teamId = repoMapping?.teamId;
 
             let issueKey =
               extractJiraIssueKey(String(pr.head?.ref ?? '')) ||
