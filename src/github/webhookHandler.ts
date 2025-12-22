@@ -53,15 +53,15 @@ export function githubWebhookHandlerFactory(args: { slackApp: App }) {
       const number = Number(pr.number);
       const title = String(pr.title);
       const url = String(pr.html_url);
-      const authorGithub = String(pr.user?.login ?? 'unknown');
+            const authorGithub = String(pr.user?.login ?? 'unknown');
 
-      const issueKey =
-        extractJiraIssueKey(String(pr.head?.ref ?? '')) ||
-        extractJiraIssueKey(title) ||
-        undefined;
+            let issueKey =
+              extractJiraIssueKey(String(pr.head?.ref ?? '')) ||
+              extractJiraIssueKey(title) ||
+              undefined;
 
-      const stack = inferStackFromLabels(pr.labels ?? []);
-      const size = calcPrSizeFromGitHub(payload);
+            const stack = inferStackFromLabels(pr.labels ?? []);
+            const size = calcPrSizeFromGitHub(payload);
 
       // opened / ready_for_review / reopened
       if (['opened', 'ready_for_review', 'reopened'].includes(action)) {
@@ -106,9 +106,40 @@ export function githubWebhookHandlerFactory(args: { slackApp: App }) {
 
         // Jira enrichment + side effects
         let jiraInfo = undefined;
+        
+        // Auto-create Jira ticket if enabled and no ticket exists
+        if (jira && !issueKey && env.JIRA_AUTO_CREATE_ON_PR_OPEN && env.JIRA_PROJECT_KEY) {
+          try {
+            const description = `PR: ${url}\nRepository: ${repoFullName}\nAuthor: ${authorGithub}\nSize: ${size}\nStack: ${stack}${size === 'LARGE' ? '\n\n⚠️ Large PR - Consider splitting into smaller PRs' : ''}`;
+            
+            const sprints = await jira.getActiveSprints(env.JIRA_PROJECT_KEY);
+            const activeSprint = sprints.length > 0 ? sprints[0] : undefined;
+            
+            const issue = await jira.createIssue({
+              projectKey: env.JIRA_PROJECT_KEY,
+              summary: `[PR #${number}] ${title}`,
+              description,
+              issueType: env.JIRA_ISSUE_TYPE,
+              labels: [repoFullName.split('/')[1], stack.toLowerCase(), `pr-size-${size.toLowerCase()}`],
+              sprintId: activeSprint?.id
+            });
+            
+            issueKey = issue.key;
+            await db.updatePr(record.id, { jiraIssueKey: issue.key });
+            jiraInfo = issue;
+            
+            console.log(`✅ Auto-created Jira ticket ${issue.key} for PR #${number}`);
+          } catch (e) {
+            console.warn('Failed to auto-create Jira ticket:', (e as any)?.message ?? e);
+          }
+        }
+        
+        // If Jira issue key exists (from branch/title or auto-created), enrich it
         if (jira && issueKey) {
           try {
-            jiraInfo = await jira.getIssueMinimal(issueKey);
+            if (!jiraInfo) {
+              jiraInfo = await jira.getIssueMinimal(issueKey);
+            }
 
             await jira.addComment(issueKey, `Linked PR: ${url} (${repoFullName} #${number})`);
             if (env.JIRA_AUTO_TRANSITION_ON_OPEN) {
@@ -120,7 +151,35 @@ export function githubWebhookHandlerFactory(args: { slackApp: App }) {
           }
         }
 
-        // Send or update Slack message
+        // Send direct messages to assigned reviewers
+        for (const reviewer of reviewers) {
+          try {
+            await args.slackApp.client.chat.postMessage({
+              channel: reviewer.slackUserId,
+              text: `📋 *New PR Assigned to You*\n\nPR #${number}: ${title}\nRepository: ${repoFullName}\nAuthor: ${authorGithub}\nSize: ${size}\n\n<${url}|View PR on GitHub>`,
+              blocks: [
+                {
+                  type: 'section',
+                  text: {
+                    type: 'mrkdwn',
+                    text: `📋 *New PR Assigned to You*\n\n*PR #${number}:* ${title}\n*Repository:* ${repoFullName}\n*Author:* ${authorGithub}\n*Size:* ${size} ${size === 'LARGE' ? '⚠️ Consider splitting this PR' : ''}\n*Stack:* ${stack}`
+                  }
+                },
+                {
+                  type: 'section',
+                  text: {
+                    type: 'mrkdwn',
+                    text: `<${url}|View PR on GitHub>`
+                  }
+                }
+              ]
+            });
+          } catch (dmError) {
+            console.warn(`Failed to send DM to reviewer ${reviewer.slackUserId}:`, dmError);
+          }
+        }
+
+        // Send or update Slack message in channel
         const blocks = buildPrMessageBlocks({ pr: record, reviewers, jira: jiraInfo });
 
         if (existing && existing.slackMessageTs) {

@@ -23,6 +23,11 @@ const STACK_EMOJI: Record<string, string> = {
 export function buildPrMessageBlocks(args: BuildPrMessageBlocksArgs): (Block | KnownBlock)[] {
   const { pr, reviewers, jira } = args;
 
+  // Add recommendation for large PRs
+  const sizeWarning = pr.size === 'LARGE' 
+    ? '\n⚠️ *This PR is LARGE. Consider splitting it into smaller PRs for easier review.*'
+    : '';
+
   const blocks: (Block | KnownBlock)[] = [
     {
       type: 'header',
@@ -56,10 +61,21 @@ export function buildPrMessageBlocks(args: BuildPrMessageBlocksArgs): (Block | K
       type: 'section',
       text: {
         type: 'mrkdwn',
-        text: `<${pr.url}|View PR on GitHub>`
+        text: `<${pr.url}|View PR on GitHub>${sizeWarning}`
       }
     }
   ];
+
+  // Add warning block for large PRs
+  if (pr.size === 'LARGE') {
+    blocks.push({
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text: '⚠️ *Large PR Detected*\nThis PR is quite large. Consider splitting it into smaller, focused PRs for:\n• Faster reviews\n• Easier to understand\n• Lower risk of bugs\n• Better code quality'
+      }
+    });
+  }
 
   // Add Jira info if available
   if (jira) {

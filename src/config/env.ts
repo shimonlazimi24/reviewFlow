@@ -26,6 +26,7 @@ export const env = {
   JIRA_PROJECT_KEY: process.env.JIRA_PROJECT_KEY ?? '',
   JIRA_ISSUE_TYPE: process.env.JIRA_ISSUE_TYPE ?? 'Task',
   JIRA_DEFAULT_SPRINT_FIELD: process.env.JIRA_DEFAULT_SPRINT_FIELD ?? 'customfield_10020', // Default sprint field ID
+  JIRA_AUTO_CREATE_ON_PR_OPEN: (process.env.JIRA_AUTO_CREATE_ON_PR_OPEN ?? 'false') === 'true', // Auto-create Jira ticket when PR opens
 
   // Database
   DATABASE_URL: process.env.DATABASE_URL ?? '' // PostgreSQL connection string (Railway provides this)
