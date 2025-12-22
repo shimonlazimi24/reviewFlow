@@ -8,6 +8,7 @@ import { githubWebhookHandlerFactory } from './github/webhookHandler';
 import { createDb } from './db/memoryDb';
 import { logger } from './utils/logger';
 import { formatErrorResponse, asyncHandler } from './utils/errors';
+import { githubWebhookValidator } from './utils/githubWebhook';
 
 async function main() {
   try {
@@ -43,7 +44,8 @@ async function main() {
 
     const app = receiver.app as express.Express;
     
-    // Middleware
+    // Middleware - must parse body as text first for signature validation
+    app.use('/webhooks/github', express.text({ type: '*/*' }));
     app.use(bodyParser.json({ type: '*/*' }));
     app.use(express.json());
 
@@ -56,8 +58,26 @@ async function main() {
       });
     });
 
-    // GitHub webhook endpoint
-    app.post('/webhooks/github', githubWebhookHandlerFactory({ slackApp }));
+    // GitHub webhook endpoint with signature validation
+    if (env.GITHUB_WEBHOOK_SECRET) {
+      app.post('/webhooks/github', 
+        githubWebhookValidator(env.GITHUB_WEBHOOK_SECRET),
+        (req, res, next) => {
+          // Parse JSON after validation
+          try {
+            req.body = JSON.parse(req.body);
+          } catch (e) {
+            logger.error('Failed to parse GitHub webhook body as JSON', e);
+            return res.status(400).json({ error: 'Invalid JSON' });
+          }
+          next();
+        },
+        githubWebhookHandlerFactory({ slackApp })
+      );
+    } else {
+      logger.warn('GitHub webhook secret not configured - webhook validation disabled');
+      app.post('/webhooks/github', githubWebhookHandlerFactory({ slackApp }));
+    }
 
     // Error handling middleware
     app.use((err: Error, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
