@@ -1,10 +1,11 @@
-import { App, BlockAction, ButtonAction, SlashCommand } from '@slack/bolt';
+import { App, BlockAction, ButtonAction, SlashCommand, ViewSubmission } from '@slack/bolt';
 import { db, Member, Role, PrRecord, Assignment } from '../db/memoryDb';
 import { buildPrMessageBlocks } from './blocks';
 import { JiraService } from '../services/jiraService';
 import { env, jiraEnabled } from '../config/env';
 import { pickReviewers } from '../services/assignmentService';
 import { formatWaitingTime, calculateWaitingTime } from '../utils/time';
+import { buildSettingsModal, buildAddMemberModal, buildEditMemberModal } from './modals';
 
 export function registerSlackHandlers(app: App) {
   // Helper to send response (works in DMs and channels)
