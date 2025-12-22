@@ -441,12 +441,21 @@ export function registerSlackHandlers(app: App) {
         return;
       }
 
-      const text = members
+      // Get workload for each member
+      const membersWithWorkload = await Promise.all(
+        members.map(async (m: any) => {
+          const openReviews = await db.getOpenAssignmentsCount(m.id);
+          return { ...m, openReviews };
+        })
+      );
+
+      const text = membersWithWorkload
         .map((m: any) => {
           const roles = m.roles.join(', ');
           const github = m.githubUsernames.join(', ');
-          const status = m.isActive ? '✅' : '❌';
-          return `${status} <@${m.slackUserId}> - ${github} (${roles})`;
+          const status = m.isActive ? (m.isUnavailable ? '🏖️' : '✅') : '❌';
+          const workload = m.openReviews > 0 ? ` (${m.openReviews} open review${m.openReviews > 1 ? 's' : ''})` : '';
+          return `${status} <@${m.slackUserId}> - ${github} (${roles})${workload}`;
         })
         .join('\n');
 
@@ -654,14 +663,15 @@ export function registerSlackHandlers(app: App) {
       }
 
       // Find new reviewer (excluding current one and unavailable members)
+      const currentMember = await db.getMember(currentAssignment.memberId);
       const newReviewers = await pickReviewers({
         stack: pr.stack === 'MIXED' ? 'MIXED' : pr.stack,
-        requiredReviewers: 1,
-        authorGithub: pr.authorGithub
+        requiredReviewers: 2, // Get 2 candidates in case first is current reviewer
+        authorGithub: pr.authorGithub,
+        excludeMemberIds: [currentAssignment.memberId] // Exclude current reviewer
       });
 
-      // Filter out current reviewer
-      const currentMember = await db.getMember(currentAssignment.memberId);
+      // Filter out current reviewer (extra safety check)
       const availableReviewers = newReviewers.filter((r: any) => r.id !== currentAssignment.memberId);
 
       if (availableReviewers.length === 0) {
@@ -763,13 +773,15 @@ export function registerSlackHandlers(app: App) {
         return;
       }
 
-      // Find new reviewer
+      // Find new reviewer (excluding current one)
       const newReviewers = await pickReviewers({
         stack: pr.stack === 'MIXED' ? 'MIXED' : pr.stack,
-        requiredReviewers: 1,
-        authorGithub: pr.authorGithub
+        requiredReviewers: 2, // Get 2 candidates in case first is current reviewer
+        authorGithub: pr.authorGithub,
+        excludeMemberIds: [currentAssignment.memberId] // Exclude current reviewer
       });
 
+      // Filter out current reviewer (extra safety check)
       const availableReviewers = newReviewers.filter((r: any) => r.id !== currentAssignment.memberId);
 
       if (availableReviewers.length === 0) {

@@ -19,8 +19,9 @@ export async function pickReviewers(args: {
   stack: Stack;
   requiredReviewers: number;
   authorGithub: string;
+  excludeMemberIds?: string[]; // Optional: exclude specific members (e.g., for reassignment)
 }): Promise<Member[]> {
-  const { stack, requiredReviewers, authorGithub } = args;
+  const { stack, requiredReviewers, authorGithub, excludeMemberIds = [] } = args;
   const members = await db.listMembers();
 
   const candidates = await Promise.all(
@@ -28,6 +29,7 @@ export async function pickReviewers(args: {
       .filter((m: Member) => m.isActive)
       .filter((m: Member) => !m.isUnavailable) // Skip unavailable members (sick/vacation)
       .filter((m: Member) => !m.githubUsernames.includes(authorGithub)) // לא להקצות למחבר
+      .filter((m: Member) => !excludeMemberIds.includes(m.id)) // Exclude specific members
       .filter((m: Member) => {
         if (stack === 'MIXED') return true;
         if (m.roles.includes('FS')) return true;
@@ -35,15 +37,26 @@ export async function pickReviewers(args: {
       })
       .map(async (m: Member) => {
         const open = await db.getOpenAssignmentsCount(m.id);
+        // Score calculation: lower is better
+        // Normalized by weight to ensure fair distribution
+        const score = open / Math.max(0.1, m.weight);
         return {
           m,
           open,
-          score: open / Math.max(0.1, m.weight)
+          score
         };
       })
   );
 
-  candidates.sort((a, b) => a.score - b.score);
+  // Sort by score (lowest first = least loaded)
+  candidates.sort((a, b) => {
+    // Primary sort: by score (workload/weight)
+    if (Math.abs(a.score - b.score) > 0.01) {
+      return a.score - b.score;
+    }
+    // Secondary sort: by absolute count (if scores are very close)
+    return a.open - b.open;
+  });
 
   return candidates.slice(0, requiredReviewers).map(x => x.m);
 }
