@@ -10,6 +10,8 @@ import { registerTeamHandlers } from './teamHandlers';
 import { requireAdmin } from '../utils/permissions';
 import { logger } from '../utils/logger';
 import { AnalyticsService } from '../services/analyticsService';
+import { loadWorkspaceContext, hasFeature } from '../services/workspaceContext';
+import { PolarService } from '../services/polarService';
 
 export function registerSlackHandlers(app: App) {
   // Register team management handlers
@@ -1190,6 +1192,45 @@ export function registerSlackHandlers(app: App) {
     } catch (error) {
       logger.error('Error in /team-metrics command', error);
       await sendResponse(client, channelId, userId, `❌ Failed to get team metrics: ${(error as Error).message}`, respond);
+    }
+  });
+
+  // Status command
+  app.command('/reviewflow', async ({ ack, command, client, respond }) => {
+    await ack();
+    const userId = command.user_id;
+    const channelId = command.channel_id;
+    const teamId = command.team_id;
+
+    try {
+      const context = await loadWorkspaceContext(teamId);
+      const polar = new PolarService();
+
+      let text = `📊 *ReviewFlow Status*\n\n`;
+      text += `*Plan:* ${context.plan}\n`;
+      text += `*Status:* ${context.status === 'active' ? '✅ Active' : '⚠️ ' + context.status}\n\n`;
+      text += `*Usage This Month:*\n`;
+      text += `• PRs Processed: ${context.usage.prsProcessed} / ${context.usage.limit}\n`;
+      text += `• Reset: ${new Date(context.usage.resetAt).toLocaleDateString()}\n\n`;
+      text += `*Features:*\n`;
+      text += `• Jira: ${context.limits.jiraIntegration ? '✅' : '❌'}\n`;
+      text += `• Auto Balance: ${context.limits.autoBalance ? '✅' : '❌'}\n`;
+      text += `• Reminders: ${context.limits.reminders ? '✅' : '❌'}\n`;
+      text += `• Advanced Analytics: ${context.limits.advancedAnalytics ? '✅' : '❌'}\n`;
+
+      if (context.currentPeriodEnd) {
+        text += `\n*Renewal Date:* ${new Date(context.currentPeriodEnd).toLocaleDateString()}`;
+      }
+
+      if (context.plan === 'FREE') {
+        const upgradeUrl = polar.generateCheckoutUrl(context.workspaceId, 'PRO' as any);
+        text += `\n\n<${upgradeUrl}|🚀 Upgrade to Pro>`;
+      }
+
+      await sendResponse(client, channelId, userId, text, respond);
+    } catch (error) {
+      logger.error('Error in /reviewflow command', error);
+      await sendResponse(client, channelId, userId, `❌ Failed to get status: ${(error as Error).message}`, respond);
     }
   });
 }

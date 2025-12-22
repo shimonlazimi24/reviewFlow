@@ -66,6 +66,10 @@ export interface Assignment {
 }
 
 class MemoryDb implements IDatabase {
+  private workspaces: Map<string, Workspace> = new Map();
+  private subscriptions: Map<string, any> = new Map(); // key: workspaceId
+  private usage: Map<string, any> = new Map(); // key: workspaceId:month
+  private auditLogs: Array<any> = [];
   private members: Map<string, Member> = new Map();
   private teams: Map<string, Team> = new Map();
   private repoMappings: Map<string, RepoMapping> = new Map(); // key: repoFullName
@@ -110,6 +114,89 @@ class MemoryDb implements IDatabase {
 
   async init(): Promise<void> {
     // No-op for in-memory database
+  }
+
+  // Workspace operations
+  async addWorkspace(workspace: Workspace): Promise<void> {
+    this.workspaces.set(workspace.id, workspace);
+  }
+
+  async getWorkspace(id: string): Promise<Workspace | undefined> {
+    return this.workspaces.get(id);
+  }
+
+  async getWorkspaceBySlackTeamId(slackTeamId: string): Promise<Workspace | undefined> {
+    return Array.from(this.workspaces.values()).find(w => w.slackTeamId === slackTeamId);
+  }
+
+  async updateWorkspace(id: string, updates: Partial<Workspace>): Promise<void> {
+    const existing = this.workspaces.get(id);
+    if (existing) {
+      this.workspaces.set(id, { ...existing, ...updates, updatedAt: Date.now() });
+    }
+  }
+
+  // Subscription operations
+  async upsertSubscription(subscription: any): Promise<void> {
+    this.subscriptions.set(subscription.workspaceId, {
+      ...subscription,
+      updatedAt: Date.now()
+    });
+  }
+
+  async getSubscription(workspaceId: string): Promise<any | undefined> {
+    return this.subscriptions.get(workspaceId);
+  }
+
+  async updateSubscription(workspaceId: string, updates: Partial<any>): Promise<void> {
+    const existing = this.subscriptions.get(workspaceId);
+    if (existing) {
+      this.subscriptions.set(workspaceId, {
+        ...existing,
+        ...updates,
+        updatedAt: Date.now()
+      });
+    }
+  }
+
+  // Usage tracking
+  async incrementUsage(workspaceId: string, month: string): Promise<void> {
+    const key = `${workspaceId}:${month}`;
+    const existing = this.usage.get(key);
+    if (existing) {
+      existing.prsProcessed += 1;
+      this.usage.set(key, existing);
+    } else {
+      this.usage.set(key, {
+        workspaceId,
+        month,
+        prsProcessed: 1,
+        limit: 50, // Default free limit
+        resetAt: new Date(`${month}-01`).setMonth(new Date(`${month}-01`).getMonth() + 1)
+      });
+    }
+  }
+
+  async getUsage(workspaceId: string, month: string): Promise<any | undefined> {
+    const key = `${workspaceId}:${month}`;
+    return this.usage.get(key);
+  }
+
+  async resetUsage(workspaceId: string, month: string): Promise<void> {
+    const key = `${workspaceId}:${month}`;
+    this.usage.delete(key);
+  }
+
+  // Audit logs
+  async addAuditLog(log: any): Promise<void> {
+    this.auditLogs.push({
+      ...log,
+      timestamp: Date.now()
+    });
+    // Keep only last 10000 logs in memory
+    if (this.auditLogs.length > 10000) {
+      this.auditLogs = this.auditLogs.slice(-10000);
+    }
   }
 
   // PR operations (async for compatibility with PostgreSQL)
@@ -281,6 +368,89 @@ class MemoryDb implements IDatabase {
       return true;
     }
     return false;
+  }
+
+  // Workspace operations
+  async addWorkspace(workspace: Workspace): Promise<void> {
+    this.workspaces.set(workspace.id, workspace);
+  }
+
+  async getWorkspace(id: string): Promise<Workspace | undefined> {
+    return this.workspaces.get(id);
+  }
+
+  async getWorkspaceBySlackTeamId(slackTeamId: string): Promise<Workspace | undefined> {
+    return Array.from(this.workspaces.values()).find(w => w.slackTeamId === slackTeamId);
+  }
+
+  async updateWorkspace(id: string, updates: Partial<Workspace>): Promise<void> {
+    const existing = this.workspaces.get(id);
+    if (existing) {
+      this.workspaces.set(id, { ...existing, ...updates, updatedAt: Date.now() });
+    }
+  }
+
+  // Subscription operations
+  async upsertSubscription(subscription: any): Promise<void> {
+    this.subscriptions.set(subscription.workspaceId, {
+      ...subscription,
+      updatedAt: Date.now()
+    });
+  }
+
+  async getSubscription(workspaceId: string): Promise<any | undefined> {
+    return this.subscriptions.get(workspaceId);
+  }
+
+  async updateSubscription(workspaceId: string, updates: Partial<any>): Promise<void> {
+    const existing = this.subscriptions.get(workspaceId);
+    if (existing) {
+      this.subscriptions.set(workspaceId, {
+        ...existing,
+        ...updates,
+        updatedAt: Date.now()
+      });
+    }
+  }
+
+  // Usage tracking
+  async incrementUsage(workspaceId: string, month: string): Promise<void> {
+    const key = `${workspaceId}:${month}`;
+    const existing = this.usage.get(key);
+    if (existing) {
+      existing.prsProcessed += 1;
+      this.usage.set(key, existing);
+    } else {
+      this.usage.set(key, {
+        workspaceId,
+        month,
+        prsProcessed: 1,
+        limit: 50, // Default free limit
+        resetAt: new Date(`${month}-01`).setMonth(new Date(`${month}-01`).getMonth() + 1)
+      });
+    }
+  }
+
+  async getUsage(workspaceId: string, month: string): Promise<any | undefined> {
+    const key = `${workspaceId}:${month}`;
+    return this.usage.get(key);
+  }
+
+  async resetUsage(workspaceId: string, month: string): Promise<void> {
+    const key = `${workspaceId}:${month}`;
+    this.usage.delete(key);
+  }
+
+  // Audit logs
+  async addAuditLog(log: any): Promise<void> {
+    this.auditLogs.push({
+      ...log,
+      timestamp: Date.now()
+    });
+    // Keep only last 10000 logs in memory
+    if (this.auditLogs.length > 10000) {
+      this.auditLogs = this.auditLogs.slice(-10000);
+    }
   }
 }
 

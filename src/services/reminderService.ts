@@ -4,6 +4,7 @@ import { db, Assignment, PrRecord, Member } from '../db/memoryDb';
 import { logger } from '../utils/logger';
 import { formatDuration, calculateWaitingTime } from '../utils/time';
 import { env } from '../config/env';
+import { loadWorkspaceContext, hasFeature } from '../services/workspaceContext';
 
 interface ReminderState {
   assignmentId: string;
@@ -55,10 +56,26 @@ export class ReminderService {
 
   private async checkAndSendReminders(): Promise<void> {
     try {
+      // Check if reminders are enabled globally
+      if (!env.REMINDER_ENABLED) {
+        return;
+      }
+
       logger.debug('Checking for overdue PR reviews...');
 
       const members = await db.listMembers();
       const activeMembers = members.filter((m: Member) => m.isActive && !m.isUnavailable);
+
+      // Group members by workspace (for now, use default workspace)
+      // In production, you'd track which workspace each member belongs to
+      const defaultTeamId = env.SLACK_DEFAULT_CHANNEL_ID; // Temporary
+      const context = await loadWorkspaceContext(defaultTeamId);
+
+      // Check if reminders feature is available for this workspace
+      if (!hasFeature(context, 'reminders')) {
+        logger.debug('Reminders not available for workspace plan', { plan: context.plan });
+        return;
+      }
 
       const overdueAssignments: Array<{
         assignment: Assignment;

@@ -33,6 +33,19 @@ export class JiraService {
         params: {
           fields: 'summary,status,assignee'
         }
+      }).catch(async (error: AxiosError) => {
+        // Handle rate limiting
+        if (error.response?.status === 429) {
+          const retryAfter = error.response.headers['retry-after'] || '60';
+          logger.warn('Jira rate limit hit, retrying after delay', { retryAfter, issueKey });
+          await new Promise(resolve => setTimeout(resolve, parseInt(retryAfter) * 1000));
+          return this.client.get(`/rest/api/3/issue/${issueKey}`, {
+            params: {
+              fields: 'summary,status,assignee'
+            }
+          });
+        }
+        throw error;
       });
 
       const issue = response.data;

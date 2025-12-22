@@ -7,6 +7,9 @@ import { inferStackFromLabels, pickReviewers } from '../services/assignmentServi
 import { buildPrMessageBlocks } from '../slack/blocks';
 import { JiraService } from '../services/jiraService';
 import { env, jiraEnabled } from '../config/env';
+import { loadWorkspaceContext, hasFeature, isUsageLimitExceeded } from '../services/workspaceContext';
+import { checkUsageLimit } from '../middleware/featureGate';
+import { logger } from '../utils/logger';
 
 interface GitHubWebhookPayload {
   action?: string;
@@ -106,14 +109,29 @@ export function githubWebhookHandlerFactory(args: { slackApp: App }) {
           totalChanges: prMetadata.totalChanges
         });
 
-                // Only create new assignments if this is a new PR
-                if (!existing) {
-                  const reviewers = await pickReviewers({
-                    stack: record.stack === 'MIXED' ? 'MIXED' : record.stack,
-                    requiredReviewers: 1,
-                    authorGithub: record.authorGithub,
-                    teamId: record.teamId
-                  });
+        // Only create new assignments if this is a new PR
+        if (!existing) {
+          // Increment usage counter
+          const now = new Date();
+          const month = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+          await db.incrementUsage(context.workspaceId, month);
+
+          // Add audit log
+          await db.addAuditLog({
+            workspaceId: context.workspaceId,
+            event: 'pr_opened',
+            prId: record.id,
+            prNumber: record.number,
+            repoFullName: record.repoFullName,
+            authorGithub: record.authorGithub
+          });
+
+          const reviewers = await pickReviewers({
+            stack: record.stack === 'MIXED' ? 'MIXED' : record.stack,
+            requiredReviewers: 1,
+            authorGithub: record.authorGithub,
+            teamId: record.teamId
+          });
 
           if (reviewers.length > 0) {
             await db.createAssignments(record.id, reviewers.map(r => r.id));
@@ -132,7 +150,8 @@ export function githubWebhookHandlerFactory(args: { slackApp: App }) {
         let jiraInfo = undefined;
         
         // Auto-create Jira ticket if enabled and no ticket exists
-        if (jira && !issueKey && env.JIRA_AUTO_CREATE_ON_PR_OPEN && env.JIRA_PROJECT_KEY) {
+        // Check if Jira integration is available for this plan
+        if (jira && !issueKey && env.JIRA_AUTO_CREATE_ON_PR_OPEN && env.JIRA_PROJECT_KEY && hasFeature(context, 'jiraIntegration')) {
           try {
             const metadataParts = [
               `PR: ${url}`,

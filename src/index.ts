@@ -4,6 +4,7 @@ import { App, ExpressReceiver } from '@slack/bolt';
 import { env, useDatabase } from './config/env';
 import { validateEnvironment } from './config/validateEnv';
 import { registerSlackHandlers } from './slack/handlers';
+import { registerHomeTab } from './slack/homeTab';
 import { githubWebhookHandlerFactory } from './github/webhookHandler';
 import { createDb } from './db/memoryDb';
 import { logger } from './utils/logger';
@@ -48,6 +49,7 @@ async function main() {
     });
 
     registerSlackHandlers(slackApp);
+    registerHomeTab(slackApp);
 
     // Start reminder service
     const reminderService = new ReminderService(slackApp);
@@ -80,6 +82,23 @@ async function main() {
         timestamp: new Date().toISOString(),
         uptime: process.uptime()
       });
+    });
+
+    // Readiness check
+    app.get('/ready', async (_req, res) => {
+      try {
+        // Check database connection
+        await db.listMembers();
+        res.json({ 
+          status: 'ready',
+          timestamp: new Date().toISOString()
+        });
+      } catch (error) {
+        res.status(503).json({
+          status: 'not ready',
+          error: 'Database connection failed'
+        });
+      }
     });
 
     // GitHub webhook endpoint with signature validation
