@@ -137,7 +137,8 @@ export function registerSlackHandlers(app: App) {
         throw new Error('Missing required fields in action');
       }
 
-      const [prId, memberId] = value.split('|');
+      // Support both old format (just prId) and new format (prId|memberId)
+      const [prId] = value.split('|');
       if (!prId) {
         throw new Error('Invalid PR ID in action value');
       }
