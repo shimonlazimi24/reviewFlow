@@ -26,6 +26,7 @@ export async function pickReviewers(args: {
   const candidates = await Promise.all(
     members
       .filter((m: Member) => m.isActive)
+      .filter((m: Member) => !m.isUnavailable) // Skip unavailable members (sick/vacation)
       .filter((m: Member) => !m.githubUsernames.includes(authorGithub)) // לא להקצות למחבר
       .filter((m: Member) => {
         if (stack === 'MIXED') return true;

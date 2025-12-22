@@ -24,9 +24,21 @@ export class PostgresDb {
         roles TEXT[] NOT NULL,
         weight DECIMAL(3,2) NOT NULL DEFAULT 1.0,
         is_active BOOLEAN NOT NULL DEFAULT true,
+        is_unavailable BOOLEAN NOT NULL DEFAULT false,
         created_at TIMESTAMP DEFAULT NOW(),
         updated_at TIMESTAMP DEFAULT NOW()
       );
+      
+      -- Add is_unavailable column if it doesn't exist (for existing databases)
+      DO $$ 
+      BEGIN
+        IF NOT EXISTS (
+          SELECT 1 FROM information_schema.columns 
+          WHERE table_name = 'members' AND column_name = 'is_unavailable'
+        ) THEN
+          ALTER TABLE members ADD COLUMN is_unavailable BOOLEAN NOT NULL DEFAULT false;
+        END IF;
+      END $$;
 
       CREATE TABLE IF NOT EXISTS prs (
         id VARCHAR(255) PRIMARY KEY,
@@ -66,15 +78,16 @@ export class PostgresDb {
   // Member operations
   async addMember(member: Member): Promise<void> {
     await this.pool.query(
-      `INSERT INTO members (id, slack_user_id, github_usernames, roles, weight, is_active)
-       VALUES ($1, $2, $3, $4, $5, $6)
+      `INSERT INTO members (id, slack_user_id, github_usernames, roles, weight, is_active, is_unavailable)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)
        ON CONFLICT (id) DO UPDATE SET
          github_usernames = $3,
          roles = $4,
          weight = $5,
          is_active = $6,
+         is_unavailable = $7,
          updated_at = NOW()`,
-      [member.id, member.slackUserId, member.githubUsernames, member.roles, member.weight, member.isActive]
+      [member.id, member.slackUserId, member.githubUsernames, member.roles, member.weight, member.isActive, member.isUnavailable ?? false]
     );
   }
 
@@ -109,6 +122,10 @@ export class PostgresDb {
     if (updates.isActive !== undefined) {
       fields.push(`is_active = $${paramCount++}`);
       values.push(updates.isActive);
+    }
+    if (updates.isUnavailable !== undefined) {
+      fields.push(`is_unavailable = $${paramCount++}`);
+      values.push(updates.isUnavailable);
     }
 
     if (fields.length === 0) return;
@@ -275,7 +292,8 @@ export class PostgresDb {
       githubUsernames: row.github_usernames || [],
       roles: row.roles || [],
       weight: parseFloat(row.weight) || 1.0,
-      isActive: row.is_active !== false
+      isActive: row.is_active !== false,
+      isUnavailable: row.is_unavailable === true
     };
   }
 

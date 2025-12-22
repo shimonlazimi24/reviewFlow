@@ -1,10 +1,41 @@
-import { App, BlockAction, ButtonAction } from '@slack/bolt';
-import { db } from '../db/memoryDb';
+import { App, BlockAction, ButtonAction, SlashCommand } from '@slack/bolt';
+import { db, Member, Role, PrRecord } from '../db/memoryDb';
 import { buildPrMessageBlocks } from './blocks';
 import { JiraService } from '../services/jiraService';
 import { env, jiraEnabled } from '../config/env';
+import { pickReviewers } from '../services/assignmentService';
 
 export function registerSlackHandlers(app: App) {
+  // Helper to send response (works in DMs and channels)
+  const sendResponse = async (client: any, channelId: string, userId: string, text: string, respond: any) => {
+    try {
+      // Try ephemeral first (works in channels)
+      if (channelId && channelId.startsWith('C')) {
+        await client.chat.postEphemeral({
+          channel: channelId,
+          user: userId,
+          text
+        });
+      } else {
+        // Use respond for DMs or if ephemeral fails
+        await respond({
+          text,
+          response_type: 'ephemeral'
+        });
+      }
+    } catch (err: any) {
+      // Fallback to respond if ephemeral fails
+      if (err.data?.error === 'not_in_channel' || err.code === 'slack_webapi_platform_error') {
+        await respond({
+          text,
+          response_type: 'ephemeral'
+        });
+      } else {
+        throw err;
+      }
+    }
+  };
+
   // Mark assignment as done
   app.action('mark_done', async ({ ack, body, client }) => {
     await ack();
@@ -525,6 +556,285 @@ export function registerSlackHandlers(app: App) {
         text: `❌ Failed to set weight: ${(error as Error).message}`,
         response_type: 'ephemeral'
       });
+    }
+  });
+
+  // Set unavailable (sick/vacation)
+  app.command('/set-unavailable', async ({ ack, command, respond }) => {
+    await ack();
+    const userId = command.user_id;
+
+    try {
+      const members = await db.listMembers();
+      const member = members.find((m: any) => m.slackUserId === userId);
+
+      if (!member) {
+        await respond({
+          text: '❌ You are not registered as a reviewer. Use `/add-reviewer` to add yourself first.',
+          response_type: 'ephemeral'
+        });
+        return;
+      }
+
+      await db.updateMember(member.id, { isUnavailable: true });
+
+      await respond({
+        text: '🏖️ You are now marked as unavailable (sick/vacation). You won\'t receive new PR assignments until you set yourself as available again with `/set-available`.',
+        response_type: 'ephemeral'
+      });
+    } catch (error) {
+      console.error('Error in /set-unavailable command:', error);
+      await respond({
+        text: `❌ Failed to set unavailable: ${(error as Error).message}`,
+        response_type: 'ephemeral'
+      });
+    }
+  });
+
+  // Set available (back from vacation)
+  app.command('/set-available', async ({ ack, command, respond }) => {
+    await ack();
+    const userId = command.user_id;
+
+    try {
+      const members = await db.listMembers();
+      const member = members.find((m: any) => m.slackUserId === userId);
+
+      if (!member) {
+        await respond({
+          text: '❌ You are not registered as a reviewer.',
+          response_type: 'ephemeral'
+        });
+        return;
+      }
+
+      await db.updateMember(member.id, { isUnavailable: false });
+
+      await respond({
+        text: '✅ You are now marked as available. You will receive new PR assignments.',
+        response_type: 'ephemeral'
+      });
+    } catch (error) {
+      console.error('Error in /set-available command:', error);
+      await respond({
+        text: `❌ Failed to set available: ${(error as Error).message}`,
+        response_type: 'ephemeral'
+      });
+    }
+  });
+
+  // Reassign PR to another reviewer
+  app.command('/reassign-pr', async ({ ack, command, client, respond }) => {
+    await ack();
+    const userId = command.user_id;
+    const channelId = command.channel_id;
+
+    try {
+      const args = command.text?.trim().split(' ') || [];
+      if (args.length < 1) {
+        await sendResponse(client, channelId, userId, 'Usage: `/reassign-pr <pr-id>`\n\nTo find PR ID, check the PR message in channel or use `/my-reviews`.', respond);
+        return;
+      }
+
+      const prId = args[0];
+      const pr = await db.getPr(prId);
+
+      if (!pr) {
+        await sendResponse(client, channelId, userId, '❌ PR not found. Make sure you use the correct PR ID.', respond);
+        return;
+      }
+
+      // Get current assignments
+      const assignments = await db.getAssignmentsForPr(prId);
+      const currentAssignment = assignments.find((a: any) => !a.completedAt);
+
+      if (!currentAssignment) {
+        await sendResponse(client, channelId, userId, '❌ No active assignment found for this PR.', respond);
+        return;
+      }
+
+      // Find new reviewer (excluding current one and unavailable members)
+      const newReviewers = await pickReviewers({
+        stack: pr.stack === 'MIXED' ? 'MIXED' : pr.stack,
+        requiredReviewers: 1,
+        authorGithub: pr.authorGithub
+      });
+
+      // Filter out current reviewer
+      const currentMember = await db.getMember(currentAssignment.memberId);
+      const availableReviewers = newReviewers.filter((r: any) => r.id !== currentAssignment.memberId);
+
+      if (availableReviewers.length === 0) {
+        await sendResponse(client, channelId, userId, '❌ No available reviewers found. All team members might be unavailable or already assigned.', respond);
+        return;
+      }
+
+      const newReviewer = availableReviewers[0];
+
+      // Mark old assignment as done
+      await db.markAssignmentDone(currentAssignment.id);
+
+      // Create new assignment
+      await db.createAssignments(prId, [newReviewer.id]);
+
+      // Update Slack message
+      if (pr.slackMessageTs) {
+        const updatedAssignments = await db.getAssignmentsForPr(prId);
+        const reviewerPromises = updatedAssignments
+          .filter((a: any) => !a.completedAt)
+          .map((a: any) => db.getMember(a.memberId));
+        const reviewerResults = await Promise.all(reviewerPromises);
+        const reviewers = reviewerResults.filter((m): m is NonNullable<typeof m> => m !== undefined);
+
+        let jiraInfo = undefined;
+        if (pr.jiraIssueKey && jiraEnabled) {
+          try {
+            const jira = new JiraService();
+            jiraInfo = await jira.getIssueMinimal(pr.jiraIssueKey);
+          } catch (e) {
+            console.warn('Failed to fetch Jira info for reassign:', e);
+          }
+        }
+
+        const blocks = buildPrMessageBlocks({ pr, reviewers, jira: jiraInfo });
+
+        try {
+          await client.chat.update({
+            channel: pr.slackChannelId,
+            ts: pr.slackMessageTs,
+            text: `PR #${pr.number}: ${pr.title}`,
+            blocks
+          });
+        } catch (updateError) {
+          console.warn('Failed to update Slack message on reassign:', updateError);
+        }
+      }
+
+      // Notify new reviewer
+      try {
+        await client.chat.postMessage({
+          channel: newReviewer.slackUserId,
+          text: `📋 *PR Reassigned to You*\n\nPR #${pr.number}: ${pr.title}\nRepository: ${pr.repoFullName}\nAuthor: ${pr.authorGithub}\n\n<${pr.url}|View PR on GitHub>`
+        });
+      } catch (dmError) {
+        console.warn(`Failed to send DM to new reviewer ${newReviewer.slackUserId}:`, dmError);
+      }
+
+      await sendResponse(client, channelId, userId, `✅ PR reassigned from <@${currentMember?.slackUserId}> to <@${newReviewer.slackUserId}>.`, respond);
+    } catch (error) {
+      console.error('Error in /reassign-pr command:', error);
+      await sendResponse(client, channelId, userId, `❌ Failed to reassign PR: ${(error as Error).message}`, respond);
+    }
+  });
+
+  // Reassign PR action (button click)
+  app.action('reassign_pr', async ({ ack, body, client, respond }) => {
+    await ack();
+
+    try {
+      const actionBody = body as BlockAction<ButtonAction>;
+      const userId = actionBody.user?.id;
+      const prId = actionBody.actions?.[0]?.value;
+      const channelId = actionBody.channel?.id;
+
+      if (!userId || !prId || !channelId) {
+        throw new Error('Missing required fields in action');
+      }
+
+      const pr = await db.getPr(prId);
+      if (!pr) {
+        await sendResponse(client, channelId, userId, '❌ PR not found.', respond);
+        return;
+      }
+
+      // Get current assignments
+      const assignments = await db.getAssignmentsForPr(prId);
+      const currentAssignment = assignments.find((a: any) => !a.completedAt);
+
+      if (!currentAssignment) {
+        await sendResponse(client, channelId, userId, '❌ No active assignment found for this PR.', respond);
+        return;
+      }
+
+      // Check if user is the assigned reviewer
+      const currentMember = await db.getMember(currentAssignment.memberId);
+      if (currentMember?.slackUserId !== userId) {
+        await sendResponse(client, channelId, userId, '❌ Only the assigned reviewer can request reassignment. Use `/reassign-pr <pr-id>` for manual reassignment.', respond);
+        return;
+      }
+
+      // Find new reviewer
+      const newReviewers = await pickReviewers({
+        stack: pr.stack === 'MIXED' ? 'MIXED' : pr.stack,
+        requiredReviewers: 1,
+        authorGithub: pr.authorGithub
+      });
+
+      const availableReviewers = newReviewers.filter((r: any) => r.id !== currentAssignment.memberId);
+
+      if (availableReviewers.length === 0) {
+        await sendResponse(client, channelId, userId, '❌ No available reviewers found. All team members might be unavailable.', respond);
+        return;
+      }
+
+      const newReviewer = availableReviewers[0];
+
+      // Mark old assignment as done
+      await db.markAssignmentDone(currentAssignment.id);
+
+      // Create new assignment
+      await db.createAssignments(prId, [newReviewer.id]);
+
+      // Update Slack message
+      if (pr.slackMessageTs) {
+        const updatedAssignments = await db.getAssignmentsForPr(prId);
+        const reviewerPromises = updatedAssignments
+          .filter((a: any) => !a.completedAt)
+          .map((a: any) => db.getMember(a.memberId));
+        const reviewerResults = await Promise.all(reviewerPromises);
+        const reviewers = reviewerResults.filter((m): m is NonNullable<typeof m> => m !== undefined);
+
+        let jiraInfo = undefined;
+        if (pr.jiraIssueKey && jiraEnabled) {
+          try {
+            const jira = new JiraService();
+            jiraInfo = await jira.getIssueMinimal(pr.jiraIssueKey);
+          } catch (e) {
+            console.warn('Failed to fetch Jira info for reassign:', e);
+          }
+        }
+
+        const blocks = buildPrMessageBlocks({ pr, reviewers, jira: jiraInfo });
+
+        try {
+          await client.chat.update({
+            channel: pr.slackChannelId,
+            ts: pr.slackMessageTs,
+            text: `PR #${pr.number}: ${pr.title}`,
+            blocks
+          });
+        } catch (updateError) {
+          console.warn('Failed to update Slack message on reassign:', updateError);
+        }
+      }
+
+      // Notify new reviewer
+      try {
+        await client.chat.postMessage({
+          channel: newReviewer.slackUserId,
+          text: `📋 *PR Reassigned to You*\n\nPR #${pr.number}: ${pr.title}\nRepository: ${pr.repoFullName}\nAuthor: ${pr.authorGithub}\n\n<${pr.url}|View PR on GitHub>`
+        });
+      } catch (dmError) {
+        console.warn(`Failed to send DM to new reviewer ${newReviewer.slackUserId}:`, dmError);
+      }
+
+      await sendResponse(client, channelId, userId, `✅ PR reassigned to <@${newReviewer.slackUserId}>.`, respond);
+    } catch (error) {
+      console.error('Error in reassign_pr action:', error);
+      const actionBody = body as BlockAction;
+      if (actionBody.user?.id && actionBody.channel?.id) {
+        await sendResponse(client, actionBody.channel.id, actionBody.user.id, `❌ Failed to reassign PR: ${(error as Error).message}`, respond);
+      }
     }
   });
 }

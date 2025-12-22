@@ -131,6 +131,20 @@ export function buildPrMessageBlocks(args: BuildPrMessageBlocksArgs): (Block | K
       });
     }
 
+    // Add reassign button for assigned reviewers
+    if (reviewers.length > 0) {
+      actions.push({
+        type: 'button',
+        text: {
+          type: 'plain_text',
+          text: '🔄 Reassign PR'
+        },
+        style: 'danger',
+        value: `${pr.id}`,
+        action_id: 'reassign_pr'
+      });
+    }
+
     if (actions.length > 0) {
       blocks.push({
         type: 'actions',

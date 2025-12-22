@@ -12,6 +12,7 @@ export interface Member {
   roles: Role[];
   weight: number; // 0.0 to 1.0, affects assignment priority
   isActive: boolean;
+  isUnavailable: boolean; // true if sick, on vacation, etc.
 }
 
 export interface PrRecord {
@@ -46,9 +47,14 @@ class MemoryDb {
   private prByRepoAndNumber: Map<string, PrRecord> = new Map(); // key: "repo/number"
 
   // Member operations (async for compatibility with PostgreSQL)
-  async addMember(member: Member): Promise<void> {
-    this.members.set(member.id, member);
-  }
+        async addMember(member: Member): Promise<void> {
+          // Ensure isUnavailable defaults to false
+          const memberWithDefaults = {
+            ...member,
+            isUnavailable: member.isUnavailable ?? false
+          };
+          this.members.set(member.id, memberWithDefaults);
+        }
 
   async getMember(id: string): Promise<Member | undefined> {
     return this.members.get(id);
