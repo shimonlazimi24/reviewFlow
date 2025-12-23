@@ -261,8 +261,50 @@ export function registerSimpleHomeHandlers(app: App) {
     }
   });
 
-  // Handle setup modal submission
-  app.view('setup_submit', async ({ ack, body, view, client }) => {
+      // Handle "Refresh" button to reload Home Tab
+      app.action('refresh_home_tab', async ({ ack, body, client }) => {
+        await ack();
+        const actionBody = body as any;
+        const userId = actionBody.user?.id;
+        let teamId = actionBody.team?.id;
+
+        if (!teamId) {
+          try {
+            const authResult = await client.auth.test();
+            if (authResult.ok && authResult.team_id) {
+              teamId = authResult.team_id;
+            }
+          } catch (error: any) {
+            logger.error('Failed to get team ID from auth.test()', error);
+          }
+        }
+
+        if (!teamId || !userId) {
+          return;
+        }
+
+        try {
+          const configured = await isWorkspaceConfigured(teamId);
+          const blocks = configured 
+            ? await buildConfiguredHomeTab(teamId)
+            : buildUnconfiguredHomeTab();
+
+          await client.views.publish({
+            user_id: userId,
+            view: {
+              type: 'home',
+              blocks
+            }
+          });
+
+          logger.info('Home tab refreshed', { userId, teamId });
+        } catch (error: any) {
+          logger.error('Error refreshing home tab', error);
+        }
+      });
+
+      // Handle setup modal submission
+      app.view('setup_submit', async ({ ack, body, view, client }) => {
     const userId = body.user.id;
     const teamId = body.team?.id || view.private_metadata;
 

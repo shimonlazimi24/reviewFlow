@@ -148,7 +148,7 @@ export async function buildConfiguredHomeTab(slackTeamId: string): Promise<any[]
       fields: [
         {
           type: 'mrkdwn',
-          text: `*GitHub:*\n${workspace?.githubInstallationId ? '✅ Connected' : '❌ Not connected'}`
+          text: `*GitHub:*\n${workspace?.githubInstallationId ? `✅ Connected\n\`${workspace.githubInstallationId}\`` : '❌ Not connected'}`
         },
         {
           type: 'mrkdwn',
@@ -210,6 +210,14 @@ export async function buildConfiguredHomeTab(slackTeamId: string): Promise<any[]
             text: '📤 Send Test Message'
           },
           action_id: 'send_test_message'
+        },
+        {
+          type: 'button',
+          text: {
+            type: 'plain_text',
+            text: '🔄 Refresh'
+          },
+          action_id: 'refresh_home_tab'
         },
         {
           type: 'button',
