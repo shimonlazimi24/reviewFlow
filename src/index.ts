@@ -98,10 +98,11 @@ async function main() {
     }
 
     registerSlackHandlers(slackApp);
-    registerHomeTab(slackApp);
+    // Note: registerHomeTab is disabled - using simplified home tab instead
+    // registerHomeTab(slackApp);
     registerOnboardingHandlers(slackApp);
     
-    // Register simplified home tab and setup handlers
+    // Register simplified home tab and setup handlers (replaces registerHomeTab)
     const { registerSimpleHomeHandlers } = await import('./slack/simpleHomeHandlers');
     registerSimpleHomeHandlers(slackApp);
 
