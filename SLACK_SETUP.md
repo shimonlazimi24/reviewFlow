@@ -8,7 +8,6 @@ Your ReviewFlow bot needs the following scopes to work properly:
 Go to: https://api.slack.com/apps → Your App → OAuth & Permissions
 
 **Required Scopes:**
-- `app_home` - **REQUIRED** - Enable Home Tab (publish custom home views)
 - `chat:write` - Post messages to channels
 - `chat:write.public` - Post to public channels
 - `commands` - Use slash commands
@@ -38,7 +37,6 @@ If you want to use Socket Mode instead of webhooks:
 1. Go to **OAuth & Permissions** in the left sidebar
 2. Scroll to **Scopes** → **Bot Token Scopes**
 3. Add these scopes:
-   - `app_home` ⭐ **REQUIRED for Home Tab**
    - `chat:write`
    - `chat:write.public`
    - `commands`
@@ -56,7 +54,24 @@ If you want to use Socket Mode instead of webhooks:
 4. Copy the **Bot User OAuth Token** (starts with `xoxb-`)
    - This is your `SLACK_BOT_TOKEN`
 
-### 4. Get Signing Secret
+### 4. Enable Home Tab ⭐ **REQUIRED FOR ONBOARDING**
+
+1. Go to **App Home** in the left sidebar (NOT OAuth & Permissions)
+2. Under **"Show Tabs"**, toggle **"Home Tab"** to **ON** ✅
+3. This enables the Home Tab feature (no scope needed)
+
+### 5. Configure Event Subscriptions ⭐ **REQUIRED FOR HOME TAB**
+
+1. Go to **Event Subscriptions** in the left sidebar
+2. Toggle **"Enable Events"** to **ON**
+3. **Request URL**: `https://your-app-url.com/slack/events`
+   - Replace with your actual app URL (e.g., `https://your-app.railway.app/slack/events`)
+   - Slack will verify the URL (make sure your app is running)
+4. Under **"Subscribe to bot events"**, click **"Add Bot User Event"**
+5. Add this event: **`app_home_opened`** ⭐ **REQUIRED**
+6. Click **"Save Changes"**
+
+### 6. Get Signing Secret
 
 1. Go to **Basic Information** in left sidebar
 2. Scroll to **App Credentials**
@@ -64,7 +79,7 @@ If you want to use Socket Mode instead of webhooks:
 4. Click **"Show"** and copy the value
    - This is your `SLACK_SIGNING_SECRET`
 
-### 5. Configure Slash Commands
+### 7. Configure Slash Commands
 
 1. Go to **Slash Commands** in left sidebar
 2. Click **"Create New Command"**
