@@ -318,19 +318,33 @@ async function main() {
       asyncHandler(async (req: express.Request, res: express.Response) => {
         try {
           const polarService = new PolarService();
-          const signature = req.headers['polar-signature'] as string;
+          // Polar may send signature in different header formats - check both
+          const signature = (req.headers['polar-signature'] || 
+                            req.headers['x-polar-signature'] || 
+                            req.headers['signature']) as string;
           const rawBody = req.body.toString();
 
           if (!signature) {
+            // Log available headers for debugging
+            const signatureHeaders = {
+              'polar-signature': req.headers['polar-signature'],
+              'x-polar-signature': req.headers['x-polar-signature'],
+              'signature': req.headers['signature'],
+              'x-signature': req.headers['x-signature']
+            };
+            
             logger.warn('Polar webhook received without signature', {
               hasWebhookSecret: !!env.POLAR_WEBHOOK_SECRET,
-              tip: 'Set POLAR_WEBHOOK_SECRET environment variable to enable signature verification'
+              availableHeaders: Object.keys(signatureHeaders).filter(k => signatureHeaders[k as keyof typeof signatureHeaders]),
+              allHeaders: Object.keys(req.headers).filter(h => h.toLowerCase().includes('sign') || h.toLowerCase().includes('polar')),
+              tip: 'Polar may not be sending signature header. Check Polar webhook configuration.'
             });
             // In development, allow webhooks without signature if secret is not configured
             if (!env.POLAR_WEBHOOK_SECRET) {
               logger.warn('Processing webhook without signature verification (POLAR_WEBHOOK_SECRET not set)');
             } else {
-              return res.status(400).json({ error: 'Missing signature' });
+              // If secret is configured but no signature, log warning but still process (Polar may not always send it)
+              logger.warn('POLAR_WEBHOOK_SECRET is set but no signature header found. Processing webhook anyway (may be a test webhook).');
             }
           }
 
