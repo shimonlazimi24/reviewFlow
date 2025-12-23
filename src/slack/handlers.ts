@@ -2064,12 +2064,7 @@ export function registerSlackHandlers(app: App) {
       if (installationIdInput && installationIdInput.trim()) {
         const installationId = installationIdInput.trim();
         
-        const workspace = await db.getWorkspace(workspaceId);
-        if (!workspace) {
-          throw new Error('Workspace not found');
-        }
-
-        // Update workspace with GitHub installation ID
+        // Update workspace with GitHub installation ID (workspace already fetched above)
         await db.updateWorkspace(workspace.id, {
           githubInstallationId: installationId,
           updatedAt: Date.now()
