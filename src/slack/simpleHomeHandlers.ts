@@ -379,12 +379,88 @@ export function registerSimpleHomeHandlers(app: App) {
   app.action('home_connect_github', async ({ ack, body, client }) => {
     await ack();
     const actionBody = body as any;
-    const teamId = actionBody.team?.id || actionBody.actions?.[0]?.value;
+    
+    logger.info('GitHub button clicked from Home Tab', {
+      hasTeam: !!actionBody.team?.id,
+      hasTriggerId: !!actionBody.trigger_id,
+      hasUserId: !!actionBody.user?.id,
+      actionValue: actionBody.actions?.[0]?.value,
+      bodyKeys: Object.keys(actionBody)
+    });
+    
+    let teamId = actionBody.team?.id || actionBody.actions?.[0]?.value;
     const userId = actionBody.user?.id;
     const triggerId = actionBody.trigger_id;
 
-    if (!teamId || !userId || !triggerId) {
-      logger.warn('Missing required fields for GitHub connection');
+    // Get team ID from auth.test() if not in body (single-workspace mode)
+    if (!teamId) {
+      try {
+        const authResult = await client.auth.test();
+        if (authResult.ok && authResult.team_id) {
+          teamId = authResult.team_id;
+          logger.debug('Got team ID from auth.test()', { teamId });
+        }
+      } catch (error: any) {
+        logger.error('Failed to get team ID from auth.test()', error);
+      }
+    }
+
+    if (!teamId || !userId) {
+      logger.warn('Missing required fields for GitHub connection', { teamId, userId });
+      try {
+        await client.chat.postEphemeral({
+          channel: userId || '',
+          user: userId || '',
+          text: '❌ Unable to connect GitHub. Please try using `/cr settings` command instead.'
+        });
+      } catch (err: any) {
+        logger.error('Failed to send error message', err);
+      }
+      return;
+    }
+
+    if (!triggerId) {
+      logger.warn('Missing trigger ID for GitHub connection - cannot open modal');
+      // Try to send ephemeral message with link instead
+      try {
+        const workspace = await db.getWorkspaceBySlackTeamId(teamId);
+        if (workspace) {
+          const githubAppUrl = process.env.GITHUB_APP_ID
+            ? `https://github.com/apps/${process.env.GITHUB_APP_NAME || 'reviewflow'}/installations/new`
+            : `${process.env.APP_BASE_URL || 'http://localhost:3000'}/connect/github?workspace_id=${workspace.id}`;
+          
+          await client.chat.postEphemeral({
+            channel: userId,
+            user: userId,
+            text: '🔗 *Connect GitHub*\n\nClick the link below to install the GitHub App:',
+            blocks: [
+              {
+                type: 'actions',
+                elements: [
+                  {
+                    type: 'button',
+                    text: {
+                      type: 'plain_text',
+                      text: '📦 Install GitHub App'
+                    },
+                    style: 'primary',
+                    url: githubAppUrl,
+                    action_id: 'github_install_link'
+                  }
+                ]
+              }
+            ]
+          });
+        } else {
+          await client.chat.postEphemeral({
+            channel: userId,
+            user: userId,
+            text: '❌ Workspace not found. Please try using `/cr settings` command.'
+          });
+        }
+      } catch (err: any) {
+        logger.error('Failed to send GitHub connection message', err);
+      }
       return;
     }
 
@@ -421,12 +497,55 @@ export function registerSimpleHomeHandlers(app: App) {
   app.action('home_connect_jira', async ({ ack, body, client }) => {
     await ack();
     const actionBody = body as any;
-    const teamId = actionBody.team?.id || actionBody.actions?.[0]?.value;
+    
+    logger.info('Jira button clicked from Home Tab', {
+      hasTeam: !!actionBody.team?.id,
+      hasTriggerId: !!actionBody.trigger_id,
+      hasUserId: !!actionBody.user?.id,
+      actionValue: actionBody.actions?.[0]?.value
+    });
+    
+    let teamId = actionBody.team?.id || actionBody.actions?.[0]?.value;
     const userId = actionBody.user?.id;
     const triggerId = actionBody.trigger_id;
 
-    if (!teamId || !userId || !triggerId) {
-      logger.warn('Missing required fields for Jira connection');
+    // Get team ID from auth.test() if not in body (single-workspace mode)
+    if (!teamId) {
+      try {
+        const authResult = await client.auth.test();
+        if (authResult.ok && authResult.team_id) {
+          teamId = authResult.team_id;
+        }
+      } catch (error: any) {
+        logger.error('Failed to get team ID from auth.test()', error);
+      }
+    }
+
+    if (!teamId || !userId) {
+      logger.warn('Missing required fields for Jira connection', { teamId, userId });
+      try {
+        await client.chat.postEphemeral({
+          channel: userId || '',
+          user: userId || '',
+          text: '❌ Unable to connect Jira. Please try using `/cr settings` command instead.'
+        });
+      } catch (err: any) {
+        logger.error('Failed to send error message', err);
+      }
+      return;
+    }
+
+    if (!triggerId) {
+      logger.warn('Missing trigger ID for Jira connection - cannot open modal');
+      try {
+        await client.chat.postEphemeral({
+          channel: userId,
+          user: userId,
+          text: '⚠️ Unable to open Jira connection modal. Please try using `/cr settings` command or click the button again.'
+        });
+      } catch (err: any) {
+        logger.error('Failed to send error message', err);
+      }
       return;
     }
 
@@ -468,11 +587,39 @@ export function registerSimpleHomeHandlers(app: App) {
   app.action('home_billing', async ({ ack, body, client }) => {
     await ack();
     const actionBody = body as any;
-    const teamId = actionBody.team?.id || actionBody.actions?.[0]?.value;
+    
+    logger.info('Billing button clicked from Home Tab', {
+      hasTeam: !!actionBody.team?.id,
+      hasUserId: !!actionBody.user?.id,
+      actionValue: actionBody.actions?.[0]?.value
+    });
+    
+    let teamId = actionBody.team?.id || actionBody.actions?.[0]?.value;
     const userId = actionBody.user?.id;
 
+    // Get team ID from auth.test() if not in body (single-workspace mode)
+    if (!teamId) {
+      try {
+        const authResult = await client.auth.test();
+        if (authResult.ok && authResult.team_id) {
+          teamId = authResult.team_id;
+        }
+      } catch (error: any) {
+        logger.error('Failed to get team ID from auth.test()', error);
+      }
+    }
+
     if (!teamId || !userId) {
-      logger.warn('Missing required fields for billing');
+      logger.warn('Missing required fields for billing', { teamId, userId });
+      try {
+        await client.chat.postEphemeral({
+          channel: userId || '',
+          user: userId || '',
+          text: '❌ Unable to open billing. Please try using `/upgrade` command instead.'
+        });
+      } catch (err: any) {
+        logger.error('Failed to send error message', err);
+      }
       return;
     }
 
