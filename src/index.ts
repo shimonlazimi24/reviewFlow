@@ -450,7 +450,8 @@ async function main() {
     // Validate token if in single-workspace mode (non-blocking)
     if (env.SLACK_BOT_TOKEN && !env.SLACK_CLIENT_ID) {
       // Run validation asynchronously to not block startup
-      setImmediate(async () => {
+      // Use process.nextTick to ensure it runs after startup completes
+      process.nextTick(async () => {
         try {
           const testResult = await slackApp.client.auth.test();
           if (testResult.ok) {
@@ -464,18 +465,33 @@ async function main() {
             });
           }
         } catch (error: any) {
-          if (error?.data?.error === 'invalid_auth') {
+          // Catch all errors to prevent unhandled promise rejection
+          if (error?.data?.error === 'invalid_auth' || error?.code === 'slack_webapi_platform_error') {
             logger.error('❌ Invalid Slack bot token!', {
               message: 'Please check your SLACK_BOT_TOKEN in .env file',
               action: 'Get a new token from: https://api.slack.com/apps → Your App → OAuth & Permissions → Bot User OAuth Token',
               note: 'The app will continue running but Slack API calls will fail until the token is fixed.'
             });
           } else {
-            logger.warn('Could not validate Slack token', error);
+            logger.warn('Could not validate Slack token', { error: error?.message || error });
           }
         }
       });
     }
+    
+    // Add global unhandled rejection handler to prevent crashes
+    process.on('unhandledRejection', (reason: any, promise) => {
+      if (reason?.code === 'slack_webapi_platform_error' && reason?.data?.error === 'invalid_auth') {
+        logger.error('❌ Unhandled Slack authentication error (token invalid)', {
+          message: 'Slack API call failed due to invalid token',
+          action: 'Please check your SLACK_BOT_TOKEN in environment variables',
+          note: 'The app will continue running but Slack features will not work until the token is fixed.'
+        });
+        // Don't crash - just log the error
+        return;
+      }
+      logger.error('Unhandled promise rejection', { reason, promise });
+    });
   } catch (error) {
     logger.error('Failed to start ReviewFlow', error);
     process.exit(1);
