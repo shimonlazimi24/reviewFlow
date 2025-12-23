@@ -855,6 +855,21 @@ export function registerSimpleHomeHandlers(app: App) {
       const { buildUpgradeModal } = await import('./upgradeModal');
       const modal = buildUpgradeModal(checkout.url);
 
+      // Validate modal title length before sending
+      if (modal.title?.text && modal.title.text.length > 24) {
+        logger.error('Modal title too long', { 
+          title: modal.title.text, 
+          length: modal.title.text.length 
+        });
+        throw new Error(`Modal title "${modal.title.text}" is ${modal.title.text.length} characters, but Slack requires ≤24 characters`);
+      }
+
+      logger.info('Opening upgrade modal', { 
+        title: modal.title?.text, 
+        titleLength: modal.title?.text?.length,
+        hasTriggerId: !!triggerId 
+      });
+
       await client.views.open({
         trigger_id: triggerId,
         view: modal
