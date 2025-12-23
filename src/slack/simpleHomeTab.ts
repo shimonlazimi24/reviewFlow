@@ -70,6 +70,17 @@ export async function buildConfiguredHomeTab(slackTeamId: string): Promise<any[]
     return buildUnconfiguredHomeTab();
   }
 
+  // Check Jira connection
+  let hasJira = false;
+  if (workspace) {
+    try {
+      const jiraConnection = await db.getJiraConnection(workspace.id);
+      hasJira = !!jiraConnection;
+    } catch (error) {
+      // Ignore errors, just assume no Jira
+    }
+  }
+
   const channelText = settings.defaultChannelId 
     ? `<#${settings.defaultChannelId}>` 
     : 'Not set';
@@ -126,6 +137,61 @@ export async function buildConfiguredHomeTab(slackTeamId: string): Promise<any[]
       type: 'divider'
     },
     {
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text: '*🔗 Integrations*'
+      }
+    },
+    {
+      type: 'section',
+      fields: [
+        {
+          type: 'mrkdwn',
+          text: `*GitHub:*\n${workspace?.githubInstallationId ? '✅ Connected' : '❌ Not connected'}`
+        },
+        {
+          type: 'mrkdwn',
+          text: `*Jira:*\n${hasJira ? '✅ Connected' : '❌ Not connected'}`
+        }
+      ]
+    },
+    {
+      type: 'actions',
+      elements: [
+        {
+          type: 'button',
+          text: {
+            type: 'plain_text',
+            text: '🐙 GitHub'
+          },
+          action_id: 'home_connect_github',
+          value: slackTeamId
+        },
+        {
+          type: 'button',
+          text: {
+            type: 'plain_text',
+            text: '🎫 Jira'
+          },
+          action_id: 'home_connect_jira',
+          value: slackTeamId
+        },
+        {
+          type: 'button',
+          text: {
+            type: 'plain_text',
+            text: '💳 Billing'
+          },
+          action_id: 'home_billing',
+          value: slackTeamId
+        }
+      ]
+    },
+    {
+      type: 'divider'
+    },
+    {
       type: 'actions',
       elements: [
         {
@@ -144,6 +210,15 @@ export async function buildConfiguredHomeTab(slackTeamId: string): Promise<any[]
             text: '📤 Send Test Message'
           },
           action_id: 'send_test_message'
+        },
+        {
+          type: 'button',
+          text: {
+            type: 'plain_text',
+            text: '⚙️ Full Settings'
+          },
+          action_id: 'home_full_settings',
+          value: slackTeamId
         }
       ]
     }

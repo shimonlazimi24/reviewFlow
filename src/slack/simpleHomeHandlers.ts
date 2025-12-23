@@ -374,5 +374,231 @@ export function registerSimpleHomeHandlers(app: App) {
       });
     }
   });
+
+  // Handle "GitHub" button from Home Tab
+  app.action('home_connect_github', async ({ ack, body, client }) => {
+    await ack();
+    const actionBody = body as any;
+    const teamId = actionBody.team?.id || actionBody.actions?.[0]?.value;
+    const userId = actionBody.user?.id;
+    const triggerId = actionBody.trigger_id;
+
+    if (!teamId || !userId || !triggerId) {
+      logger.warn('Missing required fields for GitHub connection');
+      return;
+    }
+
+    try {
+      const workspace = await db.getWorkspaceBySlackTeamId(teamId);
+      if (!workspace) {
+        await client.chat.postEphemeral({
+          channel: userId,
+          user: userId,
+          text: '❌ Workspace not found. Please try again.'
+        });
+        return;
+      }
+
+      // Import and use existing GitHub connection modal
+      const { buildGitHubConnectionModal } = await import('./onboardingWizard');
+      const modal = buildGitHubConnectionModal(workspace.id);
+      
+      await client.views.open({
+        trigger_id: triggerId,
+        view: modal
+      });
+    } catch (error: any) {
+      logger.error('Error opening GitHub connection modal', error);
+      await client.chat.postEphemeral({
+        channel: userId,
+        user: userId,
+        text: `❌ Failed to open GitHub connection: ${error.message}`
+      });
+    }
+  });
+
+  // Handle "Jira" button from Home Tab
+  app.action('home_connect_jira', async ({ ack, body, client }) => {
+    await ack();
+    const actionBody = body as any;
+    const teamId = actionBody.team?.id || actionBody.actions?.[0]?.value;
+    const userId = actionBody.user?.id;
+    const triggerId = actionBody.trigger_id;
+
+    if (!teamId || !userId || !triggerId) {
+      logger.warn('Missing required fields for Jira connection');
+      return;
+    }
+
+    try {
+      const workspace = await db.getWorkspaceBySlackTeamId(teamId);
+      if (!workspace) {
+        await client.chat.postEphemeral({
+          channel: userId,
+          user: userId,
+          text: '❌ Workspace not found. Please try again.'
+        });
+        return;
+      }
+
+      // Check if Pro plan is required
+      const { loadWorkspaceContext, hasFeature } = await import('../services/workspaceContext');
+      const context = await loadWorkspaceContext(teamId);
+      const isProRequired = !hasFeature(context, 'jiraIntegration');
+
+      // Import and use existing Jira connection modal
+      const { buildJiraConnectionModal } = await import('./onboardingWizard');
+      const modal = buildJiraConnectionModal(workspace.id, isProRequired);
+      
+      await client.views.open({
+        trigger_id: triggerId,
+        view: modal
+      });
+    } catch (error: any) {
+      logger.error('Error opening Jira connection modal', error);
+      await client.chat.postEphemeral({
+        channel: userId,
+        user: userId,
+        text: `❌ Failed to open Jira connection: ${error.message}`
+      });
+    }
+  });
+
+  // Handle "Billing" button from Home Tab
+  app.action('home_billing', async ({ ack, body, client }) => {
+    await ack();
+    const actionBody = body as any;
+    const teamId = actionBody.team?.id || actionBody.actions?.[0]?.value;
+    const userId = actionBody.user?.id;
+
+    if (!teamId || !userId) {
+      logger.warn('Missing required fields for billing');
+      return;
+    }
+
+    try {
+      const workspace = await db.getWorkspaceBySlackTeamId(teamId);
+      if (!workspace) {
+        await client.chat.postEphemeral({
+          channel: userId,
+          user: userId,
+          text: '❌ Workspace not found. Please try again.'
+        });
+        return;
+      }
+
+      const { PolarService } = await import('../services/polarService');
+      const polar = new PolarService();
+
+      if (workspace.plan === 'free' || !workspace.polarCustomerId) {
+        // Create upgrade checkout
+        const checkout = await polar.createCheckoutSession({
+          slackTeamId: teamId,
+          slackUserId: userId,
+          plan: 'pro'
+        });
+
+        await client.chat.postEphemeral({
+          channel: userId,
+          user: userId,
+          text: '🚀 *Upgrade to ReviewFlow Pro*\n\nUnlock all features:\n• Unlimited teams, members, and repos\n• Jira Integration\n• Auto Balance\n• Reminders\n• Advanced Analytics',
+          blocks: [
+            {
+              type: 'actions',
+              elements: [
+                {
+                  type: 'button',
+                  text: {
+                    type: 'plain_text',
+                    text: '🚀 Upgrade to Pro'
+                  },
+                  style: 'primary',
+                  url: checkout.url,
+                  action_id: 'upgrade_to_pro'
+                }
+              ]
+            }
+          ]
+        });
+      } else {
+        // Create customer portal
+        const portal = await polar.createCustomerPortalSession(
+          workspace.polarCustomerId,
+          `${process.env.APP_BASE_URL || 'http://localhost:3000'}/billing/success?workspace_id=${workspace.id}`
+        );
+
+        await client.chat.postEphemeral({
+          channel: userId,
+          user: userId,
+          text: '💳 *Manage Your Subscription*\n\nUpdate payment method, view invoices, or cancel subscription.',
+          blocks: [
+            {
+              type: 'actions',
+              elements: [
+                {
+                  type: 'button',
+                  text: {
+                    type: 'plain_text',
+                    text: '💳 Manage Billing'
+                  },
+                  url: portal.url,
+                  action_id: 'manage_billing'
+                }
+              ]
+            }
+          ]
+        });
+      }
+    } catch (error: any) {
+      logger.error('Error handling billing action', error);
+      await client.chat.postEphemeral({
+        channel: userId,
+        user: userId,
+        text: `❌ Failed to open billing: ${error.message}`
+      });
+    }
+  });
+
+  // Handle "Full Settings" button from Home Tab
+  app.action('home_full_settings', async ({ ack, body, client }) => {
+    await ack();
+    const actionBody = body as any;
+    const teamId = actionBody.team?.id || actionBody.actions?.[0]?.value;
+    const userId = actionBody.user?.id;
+    const triggerId = actionBody.trigger_id;
+
+    if (!teamId || !userId || !triggerId) {
+      logger.warn('Missing required fields for full settings');
+      return;
+    }
+
+    try {
+      const workspace = await db.getWorkspaceBySlackTeamId(teamId);
+      if (!workspace) {
+        await client.chat.postEphemeral({
+          channel: userId,
+          user: userId,
+          text: '❌ Workspace not found. Please try again.'
+        });
+        return;
+      }
+
+      // Import and use comprehensive settings modal
+      const { buildComprehensiveSettingsModal } = await import('./settingsModal');
+      const modal = await buildComprehensiveSettingsModal(teamId, workspace.id);
+      
+      await client.views.open({
+        trigger_id: triggerId,
+        view: modal
+      });
+    } catch (error: any) {
+      logger.error('Error opening full settings modal', error);
+      await client.chat.postEphemeral({
+        channel: userId,
+        user: userId,
+        text: `❌ Failed to open settings: ${error.message}\n\nTry using: \`/cr settings\``
+      });
+    }
+  });
 }
 
