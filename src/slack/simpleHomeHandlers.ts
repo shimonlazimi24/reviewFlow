@@ -895,8 +895,160 @@ export function registerSimpleHomeHandlers(app: App) {
     }
   });
 
-  // Handle "Full Settings" button from Home Tab
-  app.action('home_full_settings', async ({ ack, body, client }) => {
+      // Handle "Go Live" button from Home Tab
+      app.action('enable_go_live', async ({ ack, body, client }) => {
+        await ack();
+        const actionBody = body as any;
+        let teamId = actionBody.team?.id || actionBody.actions?.[0]?.value;
+        const userId = actionBody.user?.id;
+
+        if (!teamId) {
+          try {
+            const authResult = await client.auth.test();
+            if (authResult.ok && authResult.team_id) {
+              teamId = authResult.team_id;
+            }
+          } catch (error: any) {
+            logger.error('Failed to get team ID from auth.test()', error);
+          }
+        }
+
+        if (!teamId || !userId) {
+          return;
+        }
+
+        try {
+          const workspace = await getOrCreateWorkspace(teamId, userId);
+          
+          // Check prerequisites
+          const settings = await db.getWorkspaceSettings(teamId);
+          const hasChannel = !!settings?.defaultChannelId;
+          const hasGitHub = !!workspace.githubInstallationId;
+          const teams = await db.listTeams(workspace.id);
+          const members = await db.listMembers(workspace.id);
+          const activeMembers = members.filter((m: any) => m.isActive && !m.isUnavailable);
+          const repoMappings = await db.listRepoMappings(workspace.id);
+
+          const errors: string[] = [];
+          if (!hasChannel) errors.push('Notification channel not set');
+          if (!hasGitHub) errors.push('GitHub not connected');
+          if (teams.length === 0) errors.push('No teams created (use `/create-team`)');
+          if (activeMembers.length === 0) errors.push('No team members added (use `/cr add-reviewer`)');
+          if (repoMappings.length === 0) errors.push('No repositories mapped (use `/map-repo`)');
+
+          if (errors.length > 0) {
+            await client.chat.postEphemeral({
+              channel: userId,
+              user: userId,
+              text: `❌ *Cannot enable Go Live*\n\nThe following are missing:\n\n${errors.map(e => `• ${e}`).join('\n')}\n\n💡 *Quick Setup:*\n1. Create team: \`/create-team MyTeam #channel-id\`\n2. Add member: \`/cr add-reviewer @username github:username\`\n3. Map repo: \`/map-repo owner/repo team-id\`\n4. Then enable Go Live again`
+            });
+            return;
+          }
+
+          // Enable Go Live
+          await db.updateWorkspace(workspace.id, {
+            goLiveEnabled: true,
+            setupComplete: true,
+            updatedAt: Date.now()
+          });
+
+          // Refresh home tab
+          const blocks = await buildConfiguredHomeTab(teamId);
+          await client.views.publish({
+            user_id: userId,
+            view: {
+              type: 'home',
+              blocks
+            }
+          });
+
+          await client.chat.postEphemeral({
+            channel: userId,
+            user: userId,
+            text: `✅ *Go Live Enabled!*\n\nReviewFlow is now processing PRs. When you open a PR, reviewers will be automatically assigned.\n\n💡 *Test it:* Create a PR in a mapped repository and watch ReviewFlow assign reviewers!`
+          });
+
+          logger.info('Go Live enabled', { workspaceId: workspace.id, teamId });
+        } catch (error: any) {
+          logger.error('Error enabling Go Live', error);
+          try {
+            await client.chat.postEphemeral({
+              channel: userId,
+              user: userId,
+              text: `❌ Failed to enable Go Live: ${error.message}`
+            });
+          } catch (err: any) {
+            logger.error('Failed to send error message', err);
+          }
+        }
+      });
+
+      // Handle "Pause" button from Home Tab
+      app.action('pause_pr_processing', async ({ ack, body, client }) => {
+        await ack();
+        const actionBody = body as any;
+        let teamId = actionBody.team?.id || actionBody.actions?.[0]?.value;
+        const userId = actionBody.user?.id;
+
+        if (!teamId) {
+          try {
+            const authResult = await client.auth.test();
+            if (authResult.ok && authResult.team_id) {
+              teamId = authResult.team_id;
+            }
+          } catch (error: any) {
+            logger.error('Failed to get team ID from auth.test()', error);
+          }
+        }
+
+        if (!teamId || !userId) {
+          return;
+        }
+
+        try {
+          const workspace = await db.getWorkspaceBySlackTeamId(teamId);
+          if (!workspace) {
+            throw new Error('Workspace not found');
+          }
+
+          await db.updateWorkspace(workspace.id, {
+            goLiveEnabled: false,
+            updatedAt: Date.now()
+          });
+
+          // Refresh home tab
+          const blocks = await buildConfiguredHomeTab(teamId);
+          await client.views.publish({
+            user_id: userId,
+            view: {
+              type: 'home',
+              blocks
+            }
+          });
+
+          await client.chat.postEphemeral({
+            channel: userId,
+            user: userId,
+            text: `⏸️ *PR Processing Paused*\n\nReviewFlow will no longer process new PRs. Click "Go Live" again to resume.`
+          });
+
+          logger.info('Go Live disabled', { workspaceId: workspace.id, teamId });
+        } catch (error: any) {
+          logger.error('Error pausing Go Live', error);
+          try {
+            await client.chat.postEphemeral({
+              channel: userId,
+              user: userId,
+              text: `❌ Failed to pause: ${error.message}`
+            });
+          } catch (err: any) {
+            logger.error('Failed to send error message', err);
+          }
+        }
+      });
+
+      // Handle "Full Settings" button from Home Tab
+      app.action('home_full_settings', async ({ ack, body, client }) => {
     await ack();
     const actionBody = body as any;
     const teamId = actionBody.team?.id || actionBody.actions?.[0]?.value;

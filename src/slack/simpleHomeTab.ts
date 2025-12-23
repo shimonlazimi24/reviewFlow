@@ -123,6 +123,10 @@ export async function buildConfiguredHomeTab(slackTeamId: string): Promise<any[]
         {
           type: 'mrkdwn',
           text: `*Status:*\n${workspace?.goLiveEnabled ? '✅ Live' : '⏸️ Paused'}`
+        },
+        {
+          type: 'mrkdwn',
+          text: `*Setup:*\n${workspace?.setupComplete ? '✅ Complete' : '⏳ In Progress'}`
         }
       ]
     },
