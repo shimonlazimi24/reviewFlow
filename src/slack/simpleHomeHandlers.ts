@@ -16,10 +16,25 @@ export function registerSimpleHomeHandlers(app: App) {
   // Handle app_home_opened event
   app.event('app_home_opened', async ({ event, client }) => {
     const userId = event.user;
-    const teamId = (event as any).team;
+    
+    // Try to get team ID from event first (works in OAuth mode)
+    let teamId = (event as any).team;
+    
+    // If not in event, get it from auth.test() (single-workspace mode)
+    if (!teamId) {
+      try {
+        const authResult = await client.auth.test();
+        if (authResult.ok && authResult.team_id) {
+          teamId = authResult.team_id;
+          logger.debug('Got team ID from auth.test()', { teamId });
+        }
+      } catch (error: any) {
+        logger.error('Failed to get team ID from auth.test()', error);
+      }
+    }
 
     if (!teamId) {
-      logger.warn('Home tab opened without team ID');
+      logger.warn('Home tab opened without team ID - cannot publish home tab', { userId });
       return;
     }
 
