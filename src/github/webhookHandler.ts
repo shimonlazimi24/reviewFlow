@@ -66,13 +66,22 @@ async function handleInstallationWebhook(req: Request, res: Response, slackApp: 
       });
       
       const allWorkspaces = await db.listWorkspaces();
+      // Try to find workspace without GitHub (most recent first)
       const workspaceWithoutGitHub = allWorkspaces
         .filter((w: any) => !w.githubInstallationId)
         .sort((a: any, b: any) => b.createdAt - a.createdAt)[0];
       
       if (workspaceWithoutGitHub) {
         workspace = workspaceWithoutGitHub;
-        logger.info('Linking new installation to workspace', {
+        logger.info('Auto-linking new installation to workspace', {
+          workspaceId: workspace.id,
+          slackTeamId: workspace.slackTeamId,
+          installationId
+        });
+      } else if (allWorkspaces.length > 0) {
+        // If all workspaces have GitHub, link to the most recent one anyway (might be reinstall)
+        workspace = allWorkspaces.sort((a: any, b: any) => b.createdAt - a.createdAt)[0];
+        logger.info('All workspaces have GitHub, linking to most recent workspace', {
           workspaceId: workspace.id,
           slackTeamId: workspace.slackTeamId,
           installationId

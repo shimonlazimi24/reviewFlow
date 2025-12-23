@@ -2058,54 +2058,12 @@ export function registerSlackHandlers(app: App) {
       // Now check admin privileges (this will pass if user is installer)
       await requireWorkspaceAdmin(userId, slackTeamId, client);
       
-      const installationIdInput = view.state.values.installation_id_input?.installation_id?.value;
-      
-      // If user provided installation ID manually, use it
-      if (installationIdInput && installationIdInput.trim()) {
-        const installationId = installationIdInput.trim();
-        
-        // Update workspace with GitHub installation ID (workspace already fetched above)
-        await db.updateWorkspace(workspace.id, {
-          githubInstallationId: installationId,
-          updatedAt: Date.now()
-        });
-
-        // Also update workspace settings
-        const settings = await db.getWorkspaceSettings(workspace.slackTeamId);
-        if (settings) {
-          await db.upsertWorkspaceSettings({
-            ...settings,
-            githubInstallationId: installationId,
-            updatedAt: Date.now()
-          });
-        }
-
-        await client.chat.postEphemeral({
-          channel: userId,
-          user: userId,
-          text: `✅ GitHub connected successfully!\n\nInstallation ID: \`${installationId}\`\n\nYou can now continue with the setup.`
-        });
-
-        // Refresh home tab
-        const { buildConfiguredHomeTab } = await import('./simpleHomeTab');
-        const blocks = await buildConfiguredHomeTab(slackTeamId);
-        await client.views.publish({
-          user_id: userId,
-          view: {
-            type: 'home',
-            blocks
-          }
-        });
-
-        logger.info('GitHub installation manually connected', { workspaceId, installationId });
-      } else {
-        // No manual ID provided - just acknowledge (they can use the install button)
-        await client.chat.postEphemeral({
-          channel: userId,
-          user: userId,
-          text: '💡 Click the "Install GitHub App" button above to connect GitHub, or enter an Installation ID if you\'ve already installed it.'
-        });
-      }
+      // Just acknowledge - the connection happens automatically via webhook/callback
+      await client.chat.postEphemeral({
+        channel: userId,
+        user: userId,
+        text: '✅ *GitHub Connection Started*\n\n1. Click the "Install GitHub App" button above\n2. Select your repositories on GitHub\n3. The connection will be detected automatically\n\n💡 *Tip:* After installation, refresh the Home Tab to see the connection status.'
+      });
     } catch (error: any) {
       logger.error('Error saving GitHub connection', error);
       await client.chat.postEphemeral({

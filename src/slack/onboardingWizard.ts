@@ -490,32 +490,13 @@ export function buildGitHubConnectionModal(workspaceId: string): View {
         type: 'divider'
       },
       {
-        type: 'section',
-        text: {
-          type: 'mrkdwn',
-          text: '*Option 2: Manual Connection*\n\nIf you\'ve already installed the GitHub App, enter the Installation ID below.\n\n*How to find your Installation ID:*\n1. Go to: https://github.com/settings/installations\n2. Click on your ReviewFlow installation\n3. The Installation ID is in the URL (e.g., `/installations/100951978`)'
-        }
-      },
-      {
-        type: 'input',
-        block_id: 'installation_id_input',
-        label: {
-          type: 'plain_text',
-          text: 'GitHub Installation ID'
-        },
-        element: {
-          type: 'plain_text_input',
-          action_id: 'installation_id',
-          placeholder: {
-            type: 'plain_text',
-            text: 'e.g., 100951978'
+        type: 'context',
+        elements: [
+          {
+            type: 'mrkdwn',
+            text: '💡 *After installation:* The connection will be detected automatically. If it doesn\'t work, refresh the Home Tab or wait a few seconds.'
           }
-        },
-        optional: true,
-        hint: {
-          type: 'plain_text',
-          text: 'Only needed if automatic connection didn\'t work'
-        }
+        ]
       }
     ]
   };
