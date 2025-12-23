@@ -181,9 +181,9 @@ export async function buildConfiguredHomeTab(slackTeamId: string): Promise<any[]
           type: 'button',
           text: {
             type: 'plain_text',
-            text: '💳 Billing'
+            text: '🚀 Upgrade to Pro'
           },
-          action_id: 'home_billing',
+          action_id: 'home_upgrade',
           value: slackTeamId
         }
       ]

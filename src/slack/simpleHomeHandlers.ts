@@ -637,12 +637,12 @@ export function registerSimpleHomeHandlers(app: App) {
     }
   });
 
-  // Handle "Billing" button from Home Tab
-  app.action('home_billing', async ({ ack, body, client }) => {
+  // Handle "Upgrade to Pro" button from Home Tab
+  app.action('home_upgrade', async ({ ack, body, client }) => {
     await ack();
     const actionBody = body as any;
     
-    logger.info('Billing button clicked from Home Tab', {
+    logger.info('Upgrade to Pro button clicked from Home Tab', {
       hasTeam: !!actionBody.team?.id,
       hasUserId: !!actionBody.user?.id,
       actionValue: actionBody.actions?.[0]?.value
@@ -664,12 +664,12 @@ export function registerSimpleHomeHandlers(app: App) {
     }
 
     if (!teamId || !userId) {
-      logger.warn('Missing required fields for billing', { teamId, userId });
+      logger.warn('Missing required fields for upgrade', { teamId, userId });
       try {
         await client.chat.postEphemeral({
           channel: userId || '',
           user: userId || '',
-          text: '❌ Unable to open billing. Please try using `/upgrade` command instead.'
+          text: '❌ Unable to create upgrade link. Please try using `/upgrade` command instead.'
         });
       } catch (err: any) {
         logger.error('Failed to send error message', err);
@@ -680,10 +680,8 @@ export function registerSimpleHomeHandlers(app: App) {
     try {
       // Get or create workspace
       let workspace = await db.getWorkspaceBySlackTeamId(teamId);
-      logger.info('Workspace lookup for billing', { teamId, found: !!workspace });
       
       if (!workspace) {
-        // Create workspace if it doesn't exist
         const workspaceId = `workspace_${teamId}`;
         workspace = {
           id: workspaceId,
@@ -697,77 +695,21 @@ export function registerSimpleHomeHandlers(app: App) {
           updatedAt: Date.now()
         };
         await db.addWorkspace(workspace);
-        logger.info('Created workspace for billing', { workspaceId, teamId });
       }
 
-      logger.info('Creating billing checkout/portal', { workspaceId: workspace.id, plan: workspace.plan });
-      
-      // Check if Polar is configured
-      const { env } = await import('../config/env');
-      if (!env.POLAR_ACCESS_TOKEN || (!env.POLAR_PRO_PRODUCT_ID && !env.POLAR_PRO_PRICE_ID)) {
-        logger.warn('Polar billing not configured');
-        await client.chat.postEphemeral({
-          channel: userId,
-          user: userId,
-          text: '💳 *Billing Not Configured*\n\nPolar billing is not set up yet. To enable billing:\n\n1. Set up Polar.sh account\n2. Configure `POLAR_ACCESS_TOKEN` and `POLAR_PRO_PRODUCT_ID`\n3. See `POLAR_SETUP.md` for details\n\nFor now, all features are available in free mode.'
-        });
-        return;
-      }
-
-      const { PolarService } = await import('../services/polarService');
-      const polar = new PolarService();
-
-      if (workspace.plan === 'free' || !workspace.polarCustomerId) {
-        // Create upgrade checkout
-        try {
-          const checkout = await polar.createCheckoutSession({
-            slackTeamId: teamId,
-            slackUserId: userId,
-            plan: 'pro'
-          });
-
-          await client.chat.postEphemeral({
-            channel: userId,
-            user: userId,
-            text: '🚀 *Upgrade to ReviewFlow Pro*\n\nUnlock all features:\n• Unlimited teams, members, and repos\n• Jira Integration\n• Auto Balance\n• Reminders\n• Advanced Analytics',
-            blocks: [
-              {
-                type: 'actions',
-                elements: [
-                  {
-                    type: 'button',
-                    text: {
-                      type: 'plain_text',
-                      text: '🚀 Upgrade to Pro'
-                    },
-                    style: 'primary',
-                    url: checkout.url,
-                    action_id: 'upgrade_to_pro'
-                  }
-                ]
-              }
-            ]
-          });
-        } catch (error: any) {
-          logger.error('Failed to create checkout session', error);
-          await client.chat.postEphemeral({
-            channel: userId,
-            user: userId,
-            text: `❌ Failed to create upgrade link: ${error.message || 'Unknown error'}\n\nPlease check your Polar configuration or use \`/upgrade\` command.`
-          });
-        }
-      } else {
-        // Create customer portal
+      // Check if already on Pro plan
+      if (workspace.plan === 'pro' && workspace.polarCustomerId) {
+        const { PolarService } = await import('../services/polarService');
+        const polar = new PolarService();
         try {
           const portal = await polar.createCustomerPortalSession(
             workspace.polarCustomerId,
             `${process.env.APP_BASE_URL || 'http://localhost:3000'}/billing/success?workspace_id=${workspace.id}`
           );
-
           await client.chat.postEphemeral({
             channel: userId,
             user: userId,
-            text: '💳 *Manage Your Subscription*\n\nUpdate payment method, view invoices, or cancel subscription.',
+            text: '✅ *You already have Pro!*\n\nManage your subscription:',
             blocks: [
               {
                 type: 'actions',
@@ -776,39 +718,77 @@ export function registerSimpleHomeHandlers(app: App) {
                     type: 'button',
                     text: {
                       type: 'plain_text',
-                      text: '💳 Manage Billing'
+                      text: '💳 Manage Subscription'
                     },
                     url: portal.url,
-                    action_id: 'manage_billing'
+                    action_id: 'manage_subscription'
                   }
                 ]
               }
             ]
           });
+          return;
         } catch (error: any) {
           logger.error('Failed to create customer portal', error);
-          await client.chat.postEphemeral({
-            channel: userId,
-            user: userId,
-            text: `❌ Failed to open billing portal: ${error.message || 'Unknown error'}\n\nPlease try using \`/billing\` command.`
-          });
         }
       }
+
+      // Check if Polar is configured
+      const { env } = await import('../config/env');
+      if (!env.POLAR_ACCESS_TOKEN || (!env.POLAR_PRO_PRODUCT_ID && !env.POLAR_PRO_PRICE_ID)) {
+        await client.chat.postEphemeral({
+          channel: userId,
+          user: userId,
+          text: '💳 *Billing Not Configured*\n\nPolar billing is not set up yet. All features are available in free mode.'
+        });
+        return;
+      }
+
+      // Create upgrade checkout (same as working upgrade button)
+      const { PolarService } = await import('../services/polarService');
+      const polar = new PolarService();
+      const checkout = await polar.createCheckoutSession({
+        slackTeamId: teamId,
+        slackUserId: userId,
+        plan: 'pro'
+      });
+
+      await client.chat.postEphemeral({
+        channel: userId,
+        user: userId,
+        text: '🚀 *Upgrade to ReviewFlow Pro*\n\nUnlock all features:\n• Unlimited teams, members, and repos\n• Jira Integration\n• Auto Balance\n• Reminders\n• Advanced Analytics',
+        blocks: [
+          {
+            type: 'actions',
+            elements: [
+              {
+                type: 'button',
+                text: {
+                  type: 'plain_text',
+                  text: '🚀 Upgrade to Pro'
+                },
+                style: 'primary',
+                url: checkout.url,
+                action_id: 'upgrade_to_pro'
+              }
+            ]
+          }
+        ]
+      });
     } catch (error: any) {
-      logger.error('Error handling billing action', error, {
+      logger.error('Error creating upgrade link', error, {
         teamId,
         userId,
-        errorMessage: error.message,
-        errorStack: error.stack
+        errorMessage: error.message
       });
       try {
         await client.chat.postEphemeral({
           channel: userId,
           user: userId,
-          text: `❌ Failed to open billing: ${error.message || 'Unknown error'}\n\nPlease try using \`/upgrade\` or \`/billing\` command.`
+          text: `❌ Failed to create upgrade link: ${error.message || 'Unknown error'}\n\nPlease try using \`/upgrade\` command.`
         });
       } catch (err: any) {
-        logger.error('Failed to send error message to user', err);
+        logger.error('Failed to send error message', err);
       }
     }
   });
