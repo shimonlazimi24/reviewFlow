@@ -66,9 +66,20 @@ export class ReminderService {
       const members = await db.listMembers();
       const activeMembers = members.filter((m: Member) => m.isActive && !m.isUnavailable);
 
+      if (activeMembers.length === 0) {
+        logger.debug('No active members found, skipping reminder check');
+        return;
+      }
+
       // Group members by workspace (for now, use default workspace)
       // In production, you'd track which workspace each member belongs to
       const defaultTeamId = env.SLACK_DEFAULT_CHANNEL_ID; // Temporary
+      
+      if (!defaultTeamId) {
+        logger.debug('No default team ID configured, skipping reminder check');
+        return;
+      }
+      
       const context = await loadWorkspaceContext(defaultTeamId);
 
       // Check if reminders feature is available for this workspace
@@ -182,10 +193,11 @@ export class ReminderService {
         `*Status:* ${assignment.status}\n\n` +
         `<${pr.url}|Review PR on GitHub>`;
 
-      await this.slackApp.client.chat.postMessage({
-        channel: member.slackUserId,
-        text: `Reminder: PR #${pr.number} review overdue`,
-        blocks: [
+      try {
+        await this.slackApp.client.chat.postMessage({
+          channel: member.slackUserId,
+          text: `Reminder: PR #${pr.number} review overdue`,
+          blocks: [
           {
             type: 'section',
             text: {
@@ -227,11 +239,22 @@ export class ReminderService {
         prNumber: pr.number,
         waitingHours: waitingTime / (1000 * 60 * 60)
       });
-    } catch (error) {
-      logger.error('Failed to send DM reminder', error, {
-        assignmentId: assignment.id,
-        memberId: member.id
-      });
+      } catch (error: any) {
+        // Handle invalid_auth gracefully
+        if (error?.data?.error === 'invalid_auth') {
+          logger.warn('Cannot send reminder - Slack authentication failed', {
+            assignmentId: assignment.id,
+            note: 'Please check your SLACK_BOT_TOKEN'
+          });
+          return; // Skip this reminder
+        }
+        logger.error('Failed to send DM reminder', error, {
+          assignmentId: assignment.id,
+          memberId: member.id
+        });
+      }
+    } catch (error: any) {
+      logger.error('Error in sendDmReminder', error);
     }
   }
 
@@ -251,32 +274,44 @@ export class ReminderService {
         `*Status:* ${assignment.status}\n\n` +
         `<${pr.url}|Review PR on GitHub>`;
 
-      await this.slackApp.client.chat.postMessage({
-        channel: pr.slackChannelId,
-        text: `Escalation: PR #${pr.number} review overdue`,
-        blocks: [
-          {
-            type: 'section',
-            text: {
-              type: 'mrkdwn',
-              text: message
+      try {
+        await this.slackApp.client.chat.postMessage({
+          channel: pr.slackChannelId,
+          text: `Escalation: PR #${pr.number} review overdue`,
+          blocks: [
+            {
+              type: 'section',
+              text: {
+                type: 'mrkdwn',
+                text: message
+              }
             }
-          }
-        ]
-      });
+          ]
+        });
 
-      logger.info('Escalated to channel', {
-        assignmentId: assignment.id,
-        memberId: member.id,
-        prNumber: pr.number,
-        channelId: pr.slackChannelId,
-        waitingHours: waitingTime / (1000 * 60 * 60)
-      });
-    } catch (error) {
-      logger.error('Failed to escalate to channel', error, {
-        assignmentId: assignment.id,
-        memberId: member.id
-      });
+        logger.info('Escalated to channel', {
+          assignmentId: assignment.id,
+          memberId: member.id,
+          prNumber: pr.number,
+          channelId: pr.slackChannelId,
+          waitingHours: waitingTime / (1000 * 60 * 60)
+        });
+      } catch (error: any) {
+        // Handle invalid_auth gracefully
+        if (error?.data?.error === 'invalid_auth') {
+          logger.warn('Cannot send escalation - Slack authentication failed', {
+            assignmentId: assignment.id,
+            note: 'Please check your SLACK_BOT_TOKEN'
+          });
+          return; // Skip this escalation
+        }
+        logger.error('Failed to escalate to channel', error, {
+          assignmentId: assignment.id,
+          memberId: member.id
+        });
+      }
+    } catch (error: any) {
+      logger.error('Error in escalateToChannel', error);
     }
   }
 

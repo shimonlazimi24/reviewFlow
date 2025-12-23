@@ -425,6 +425,20 @@ async function main() {
       res.status(errorResponse.error.statusCode).json(errorResponse);
     });
 
+    // Add error handler for unhandled Slack API errors
+    slackApp.error(async (error: any) => {
+      if (error.code === 'slack_webapi_platform_error' && error.data?.error === 'invalid_auth') {
+        logger.error('❌ Slack authentication failed!', {
+          message: 'Your SLACK_BOT_TOKEN is invalid or expired.',
+          action: 'Please check your .env file and regenerate the token from https://api.slack.com/apps',
+          error: error.data?.error
+        });
+        // Don't exit - allow the app to continue (it will fail on actual API calls)
+      } else {
+        logger.error('Slack app error', error);
+      }
+    });
+
     await slackApp.start(env.PORT);
     logger.info('ReviewFlow started successfully', {
       port: env.PORT,
@@ -432,6 +446,36 @@ async function main() {
       githubWebhook: `http://localhost:${env.PORT}/webhooks/github`,
       nodeEnv: env.NODE_ENV
     });
+    
+    // Validate token if in single-workspace mode (non-blocking)
+    if (env.SLACK_BOT_TOKEN && !env.SLACK_CLIENT_ID) {
+      // Run validation asynchronously to not block startup
+      setImmediate(async () => {
+        try {
+          const testResult = await slackApp.client.auth.test();
+          if (testResult.ok) {
+            logger.info('✅ Slack bot token validated successfully', {
+              team: testResult.team,
+              user: testResult.user
+            });
+          } else {
+            logger.error('❌ Slack bot token validation failed', {
+              error: testResult.error
+            });
+          }
+        } catch (error: any) {
+          if (error?.data?.error === 'invalid_auth') {
+            logger.error('❌ Invalid Slack bot token!', {
+              message: 'Please check your SLACK_BOT_TOKEN in .env file',
+              action: 'Get a new token from: https://api.slack.com/apps → Your App → OAuth & Permissions → Bot User OAuth Token',
+              note: 'The app will continue running but Slack API calls will fail until the token is fixed.'
+            });
+          } else {
+            logger.warn('Could not validate Slack token', error);
+          }
+        }
+      });
+    }
   } catch (error) {
     logger.error('Failed to start ReviewFlow', error);
     process.exit(1);

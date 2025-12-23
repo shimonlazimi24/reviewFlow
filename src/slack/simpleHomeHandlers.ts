@@ -38,8 +38,12 @@ export function registerSimpleHomeHandlers(app: App) {
       });
 
       logger.info('Simple home tab published', { userId, teamId, configured });
-    } catch (error) {
+    } catch (error: any) {
       logger.error('Error publishing simple home tab', error);
+      // Don't crash on invalid_auth - just log it
+      if (error?.data?.error === 'invalid_auth') {
+        logger.error('Slack authentication failed. Please check your SLACK_BOT_TOKEN is valid and the app is installed.');
+      }
     }
   });
 
