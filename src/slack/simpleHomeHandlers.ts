@@ -13,7 +13,6 @@ import {
  * Register simplified home tab and setup handlers
  */
 export function registerSimpleHomeHandlers(app: App) {
-
   // Handle app_home_opened event
   app.event('app_home_opened', async ({ event, client }) => {
     const userId = event.user;
@@ -195,8 +194,9 @@ export function registerSimpleHomeHandlers(app: App) {
       return;
     }
 
+    let settings: any = null;
     try {
-      const settings = await db.getWorkspaceSettings(teamId);
+      settings = await db.getWorkspaceSettings(teamId);
       
       if (!settings?.defaultChannelId) {
         await client.chat.postEphemeral({
@@ -228,11 +228,36 @@ export function registerSimpleHomeHandlers(app: App) {
       });
     } catch (error: any) {
       logger.error('Error sending test message', error);
-      await client.chat.postEphemeral({
-        channel: userId,
-        user: userId,
-        text: `❌ Failed to send test message: ${error.message}`
-      });
+      
+      // Handle specific error cases
+      const channelId = settings?.defaultChannelId || 'the configured channel';
+      let errorMessage = `❌ Failed to send test message: ${error.message}`;
+      
+      if (error?.data?.error === 'not_in_channel') {
+        errorMessage = `❌ Bot is not a member of <#${channelId}>\n\n` +
+          `*To fix this:*\n` +
+          `1. Go to the channel <#${channelId}>\n` +
+          `2. Type: \`/invite @reviewFlow\` (or your bot's name)\n` +
+          `3. Or click the channel name → "Integrations" → "Add apps" → Find ReviewFlow\n` +
+          `4. Try sending the test message again`;
+      } else if (error?.data?.error === 'channel_not_found') {
+        errorMessage = `❌ Channel <#${channelId}> not found.\n\n` +
+          `The channel may have been deleted or the bot doesn't have access. Please update your configuration.`;
+      } else if (error?.data?.error === 'is_archived') {
+        errorMessage = `❌ Channel <#${channelId}> is archived.\n\n` +
+          `Please select an active channel in your configuration.`;
+      }
+      
+      try {
+        await client.chat.postEphemeral({
+          channel: userId,
+          user: userId,
+          text: errorMessage
+        });
+      } catch (ephemeralError: any) {
+        // If we can't send ephemeral, just log it
+        logger.error('Failed to send error message to user', ephemeralError);
+      }
     }
   });
 
