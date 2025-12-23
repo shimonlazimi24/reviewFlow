@@ -152,7 +152,7 @@ export async function buildConfiguredHomeTab(slackTeamId: string): Promise<any[]
       fields: [
         {
           type: 'mrkdwn',
-          text: `*GitHub:*\n${workspace?.githubInstallationId ? `✅ Connected\n\`${workspace.githubInstallationId}\`` : '❌ Not connected'}`
+          text: `*GitHub:*\n${workspace?.githubInstallationId || settings?.githubInstallationId ? `✅ Connected\n\`${workspace?.githubInstallationId || settings?.githubInstallationId}\`` : '❌ Not connected'}`
         },
         {
           type: 'mrkdwn',
