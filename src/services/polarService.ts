@@ -42,13 +42,14 @@ export class PolarService {
     slackUserId: string;
     plan?: 'pro';
   }): Promise<PolarCheckoutSession> {
+    // Define these outside try block for error logging
+    const productId = env.POLAR_PRO_PRODUCT_ID;
+    const priceId = env.POLAR_PRO_PRICE_ID;
+    
     try {
-      if (!env.POLAR_PRO_PRODUCT_ID && !env.POLAR_PRO_PRICE_ID) {
+      if (!productId && !priceId) {
         throw new Error('POLAR_PRO_PRODUCT_ID or POLAR_PRO_PRICE_ID must be configured');
       }
-
-      const productId = env.POLAR_PRO_PRODUCT_ID;
-      const priceId = env.POLAR_PRO_PRICE_ID;
 
       // Polar API: Create checkout link
       // Polar API expects either product_id OR price_id, not both
