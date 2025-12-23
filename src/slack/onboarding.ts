@@ -688,6 +688,15 @@ export function registerOnboardingHandlers(app: any) {
         });
         return;
       }
+
+      // If workspace doesn't have installerUserId, set it to current user
+      if (!workspace.installerUserId) {
+        await db.updateWorkspace(workspace.id, {
+          installerUserId: userId,
+          updatedAt: Date.now()
+        });
+        logger.info('Set installerUserId for workspace', { workspaceId: workspace.id, userId });
+      }
       
       // Extract form values
       const baseUrl = view.state.values.jira_base_url?.base_url?.value;

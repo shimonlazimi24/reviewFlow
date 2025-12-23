@@ -2082,6 +2082,22 @@ export function registerSlackHandlers(app: App) {
     const workspaceId = view.private_metadata;
 
     try {
+      // Get workspace first to check if installerUserId needs to be set
+      const workspace = await db.getWorkspace(workspaceId);
+      if (!workspace) {
+        throw new Error('Workspace not found');
+      }
+
+      // If workspace doesn't have installerUserId, set it to current user
+      if (!workspace.installerUserId) {
+        await db.updateWorkspace(workspace.id, {
+          installerUserId: userId,
+          updatedAt: Date.now()
+        });
+        logger.info('Set installerUserId for workspace', { workspaceId, userId });
+      }
+
+      // Now check admin privileges (this will pass if user is installer)
       await requireWorkspaceAdmin(userId, slackTeamId, client);
       
       const baseUrl = view.state.values.jira_base_url?.base_url?.value;
@@ -2099,10 +2115,7 @@ export function registerSlackHandlers(app: App) {
         return;
       }
 
-      const workspace = await db.getWorkspace(workspaceId);
-      if (!workspace) {
-        throw new Error('Workspace not found');
-      }
+      // Workspace already fetched above, no need to fetch again
 
       // Encrypt API token
       const encryptedToken = encrypt(apiToken);
