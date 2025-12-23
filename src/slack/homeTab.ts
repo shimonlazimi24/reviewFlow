@@ -8,7 +8,8 @@ import { logger } from '../utils/logger';
 import { buildOnboardingChecklist } from './onboarding';
 import { buildOnboardingWizardHomeTab } from './onboardingWizard';
 import { isWorkspaceAdmin } from '../utils/permissions';
-import { calculateWaitingTime, formatWaitingTime } from '../utils/time';
+import { calculateWaitingTime, formatWaitingTime, formatDuration } from '../utils/time';
+import { AnalyticsService } from '../services/analyticsService';
 
 export function registerHomeTab(app: App) {
   app.event('app_home_opened', async ({ event, client }) => {
@@ -92,6 +93,15 @@ export function registerHomeTab(app: App) {
       const jiraConnection = await db.getJiraConnection(workspace.id);
       const hasJira = !!jiraConnection;
 
+      // Get analytics metrics
+      const analyticsService = new AnalyticsService();
+      let metrics: any = null;
+      try {
+        metrics = await analyticsService.getReviewMetrics(workspace.id);
+      } catch (error) {
+        logger.warn('Failed to load analytics metrics', error);
+      }
+
       // Build home tab view (setup complete)
       const blocks = await buildHomeTabBlocks(
         context, 
@@ -99,7 +109,8 @@ export function registerHomeTab(app: App) {
         activeMembers.length,
         hasGitHub,
         hasJira,
-        workspace.id
+        workspace.id,
+        metrics
       );
 
       await client.views.publish({
@@ -123,7 +134,8 @@ export async function buildHomeTabBlocks(
   memberCount: number,
   hasGitHub: boolean,
   hasJira: boolean,
-  workspaceId: string
+  workspaceId: string,
+  metrics?: any
 ): Promise<any[]> {
   const planEmoji = getPlanEmoji(context.plan);
   const usagePercent = Math.round((context.usage.prsProcessed / context.usage.limit) * 100);
@@ -201,6 +213,40 @@ export async function buildHomeTabBlocks(
         }
       ]
     },
+    // Analytics widgets
+    ...(metrics ? [
+      {
+        type: 'divider'
+      },
+      {
+        type: 'section',
+        text: {
+          type: 'mrkdwn',
+          text: '*📊 Analytics*'
+        }
+      },
+      {
+        type: 'section',
+        fields: [
+          {
+            type: 'mrkdwn',
+            text: `*Avg Review Time:*\n${metrics.averageReviewTime > 0 ? formatDuration(metrics.averageReviewTime) : 'N/A'}`
+          },
+          {
+            type: 'mrkdwn',
+            text: `*Pending Reviews:*\n${metrics.pendingReviews || 0}`
+          },
+          {
+            type: 'mrkdwn',
+            text: `*Completed Reviews:*\n${metrics.completedReviews || 0}`
+          },
+          {
+            type: 'mrkdwn',
+            text: `*In Progress:*\n${metrics.inProgressReviews || 0}`
+          }
+        ]
+      }
+    ] : []),
     {
       type: 'divider'
     },

@@ -1349,11 +1349,15 @@ export function registerSlackHandlers(app: App) {
     const channelId = command.channel_id;
 
     try {
-      const args = command.text?.trim();
-      const teamId = args || undefined;
+      // Get workspace ID from team
+      const workspace = await db.getWorkspaceBySlackTeamId(command.team_id);
+      if (!workspace) {
+        await sendResponse(client, channelId, userId, '❌ Workspace not found', respond);
+        return;
+      }
 
       const analytics = new AnalyticsService();
-      const metrics = await analytics.getReviewMetrics(teamId);
+      const metrics = await analytics.getReviewMetrics(workspace.id);
       const formatted = analytics.formatMetricsForSlack(metrics);
 
       await sendResponse(client, channelId, userId, formatted, respond);
@@ -1370,11 +1374,18 @@ export function registerSlackHandlers(app: App) {
     const channelId = command.channel_id;
 
     try {
+      // Get workspace ID from team
+      const workspace = await db.getWorkspaceBySlackTeamId(command.team_id);
+      if (!workspace) {
+        await sendResponse(client, channelId, userId, '❌ Workspace not found', respond);
+        return;
+      }
+
       const args = command.text?.trim();
       const teamId = args || undefined;
 
       const analytics = new AnalyticsService();
-      const teamMetrics = await analytics.getTeamMetrics(teamId);
+      const teamMetrics = await analytics.getTeamMetrics(workspace.id, teamId);
 
       let text = `📊 *Team Metrics${teamMetrics.teamName ? `: ${teamMetrics.teamName}` : ''}*\n\n`;
       text += `*Members:*\n`;

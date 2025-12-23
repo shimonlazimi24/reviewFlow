@@ -58,11 +58,11 @@ export class AnalyticsService {
   /**
    * Get overall review metrics
    */
-  async getReviewMetrics(teamId?: string): Promise<ReviewMetrics> {
+  async getReviewMetrics(workspaceId: string): Promise<ReviewMetrics> {
     try {
-      const allPRs = await db.listOpenPrs(teamId);
+      const allPRs = await db.listOpenPrs(workspaceId);
       const allAssignments: Assignment[] = [];
-      const allMembers = await db.listMembers(teamId);
+      const allMembers = await db.listMembers(workspaceId);
 
       // Collect all assignments
       for (const pr of allPRs) {
@@ -115,18 +115,26 @@ export class AnalyticsService {
   /**
    * Get team-specific metrics
    */
-  async getTeamMetrics(teamId?: string): Promise<TeamMetrics> {
+  async getTeamMetrics(workspaceId: string, teamId?: string): Promise<TeamMetrics> {
     try {
-      const members = await db.listMembers(teamId);
+      const members = await db.listMembers(workspaceId, teamId);
       const activeMembers = members.filter((m: Member) => m.isActive && !m.isUnavailable);
-      const openPRs = await db.listOpenPrs(teamId);
+      const openPRs = await db.listOpenPrs(workspaceId);
 
       // Get workload distribution
       const workloadDistribution = await Promise.all(
         members.map(async (member: Member) => {
-          const assignments = await db.getOpenAssignmentsForMember(member.id);
-          const completedAssignments = assignments.filter((a: Assignment) => a.status === 'DONE');
-          const openReviews = assignments.filter((a: Assignment) => a.status !== 'DONE').length;
+          const openAssignments = await db.getOpenAssignmentsForMember(member.id);
+          // Get all assignments for this member to count completed
+          const allPRs = await db.listOpenPrs(workspaceId);
+          const allMemberAssignments: Assignment[] = [];
+          for (const pr of allPRs) {
+            const prAssignments = await db.getAssignmentsForPr(pr.id);
+            const memberAssignments = prAssignments.filter((a: Assignment) => a.memberId === member.id);
+            allMemberAssignments.push(...memberAssignments);
+          }
+          const completedAssignments = allMemberAssignments.filter((a: Assignment) => a.status === 'DONE');
+          const openReviews = openAssignments.length;
 
           return {
             memberId: member.id,
