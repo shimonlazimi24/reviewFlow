@@ -141,11 +141,24 @@ export function registerGitHubConnectRoutes(app: express.Express) {
         installation_id, 
         setup_action, 
         state,
-        hasState: !!state 
+        hasState: !!state,
+        allQueryParams: Object.keys(req.query),
+        queryString: req.url
       });
       
       if (!installation_id) {
-        return res.status(400).send('Missing installation_id');
+        logger.warn('GitHub callback missing installation_id', { query: req.query });
+        return res.status(400).send(`
+          <html>
+            <head><title>Error</title></head>
+            <body>
+              <h1>❌ Missing Installation ID</h1>
+              <p>The GitHub installation callback is missing the installation_id parameter.</p>
+              <p>Please try installing the GitHub App again from the ReviewFlow Home Tab.</p>
+              <p><a href="slack://open">Return to Slack</a></p>
+            </body>
+          </html>
+        `);
       }
 
       const installationId = String(installation_id);
@@ -166,12 +179,32 @@ export function registerGitHubConnectRoutes(app: express.Express) {
       // If still not found, try to find any workspace without GitHub connection
       // (for cases where state wasn't passed)
       if (!workspace) {
-        logger.warn('Workspace not found from state, searching for workspace without GitHub', { state });
+        logger.warn('Workspace not found from state, searching for workspace without GitHub', { 
+          state,
+          installationId 
+        });
         const allWorkspaces = await db.listWorkspaces();
+        logger.info('Searching workspaces', { 
+          totalWorkspaces: allWorkspaces.length,
+          workspacesWithoutGitHub: allWorkspaces.filter((w: any) => !w.githubInstallationId).length
+        });
         // Find workspace that doesn't have GitHub connected yet (most recent one)
         workspace = allWorkspaces
           .filter((w: any) => !w.githubInstallationId)
           .sort((a: any, b: any) => b.createdAt - a.createdAt)[0];
+        
+        if (workspace) {
+          logger.info('Found workspace without GitHub to link', {
+            workspaceId: workspace.id,
+            slackTeamId: workspace.slackTeamId,
+            createdAt: workspace.createdAt
+          });
+        } else {
+          logger.warn('No workspace found without GitHub connection', {
+            totalWorkspaces: allWorkspaces.length,
+            allHaveGitHub: allWorkspaces.every((w: any) => w.githubInstallationId)
+          });
+        }
       }
 
       if (workspace) {
