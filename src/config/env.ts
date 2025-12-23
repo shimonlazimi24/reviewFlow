@@ -33,8 +33,13 @@ export const env = {
   PORT: Number(process.env.PORT ?? 3000),
 
   SLACK_SIGNING_SECRET: req('SLACK_SIGNING_SECRET'),
-  SLACK_BOT_TOKEN: req('SLACK_BOT_TOKEN'),
-  SLACK_DEFAULT_CHANNEL_ID: req('SLACK_DEFAULT_CHANNEL_ID'),
+  SLACK_BOT_TOKEN: opt('SLACK_BOT_TOKEN'), // Optional when using OAuth
+  SLACK_DEFAULT_CHANNEL_ID: opt('SLACK_DEFAULT_CHANNEL_ID'), // Optional, per-workspace now
+  
+  // OAuth (for multi-workspace)
+  SLACK_CLIENT_ID: opt('SLACK_CLIENT_ID'),
+  SLACK_CLIENT_SECRET: opt('SLACK_CLIENT_SECRET'),
+  SLACK_STATE_SECRET: opt('SLACK_STATE_SECRET'),
 
   GITHUB_WEBHOOK_SECRET: process.env.GITHUB_WEBHOOK_SECRET ?? '',
   GITHUB_APP_ID: opt('GITHUB_APP_ID'),

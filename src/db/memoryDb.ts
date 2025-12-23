@@ -1,4 +1,5 @@
 // In-memory database for PRs, members, and assignments
+import { logger } from '../utils/logger';
 
 export type Role = 'FE' | 'BE' | 'FS'; // Frontend, Backend, Full Stack
 export type PrStatus = 'OPEN' | 'CLOSED' | 'MERGED';
@@ -28,6 +29,10 @@ export interface Workspace {
   name?: string;
   plan: 'free' | 'pro' | 'enterprise';
   defaultChannelId?: string; // Per-workspace default channel (replaces env SLACK_DEFAULT_CHANNEL_ID)
+  setupChannelId?: string; // Optional private channel for setup messages (DM if not set)
+  installerUserId?: string; // User who installed the app (first admin)
+  setupComplete: boolean; // Whether onboarding wizard is complete
+  setupStep?: string; // Current step in onboarding: 'channel' | 'github' | 'jira' | 'members' | 'complete'
   polarCustomerId?: string;
   polarSubscriptionId?: string;
   subscriptionStatus: 'active' | 'canceled' | 'revoked' | 'past_due' | 'incomplete' | 'unknown';
@@ -45,7 +50,34 @@ export interface JiraConnection {
   authType: 'basic' | 'oauth';
   tokenEncrypted: string; // Encrypted API token
   email: string;
+  prOpenedTransition?: string; // Transition name when PR is opened
+  prMergedTransition?: string; // Transition name when PR is merged
   createdAt: number;
+  updatedAt: number;
+}
+
+export interface WorkspaceSettings {
+  slackTeamId: string; // Primary key
+  defaultChannelId?: string;
+  githubInstallationId?: string;
+  jiraBaseUrl?: string;
+  jiraEmail?: string;
+  jiraApiTokenEncrypted?: string;
+  requiredReviewers?: number;
+  reminderHours?: number;
+  reminderEscalationHours?: number;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface SlackInstallation {
+  teamId: string; // Primary key
+  botToken: string; // Encrypted
+  botId?: string;
+  botUserId?: string;
+  installerUserId?: string;
+  teamName?: string;
+  installedAt: number;
   updatedAt: number;
 }
 
@@ -122,6 +154,20 @@ export interface IDatabase {
   
   // Audit logs
   addAuditLog(log: any): Promise<void>;
+  listAuditLogs(workspaceId: string, limit?: number): Promise<any[]>;
+  
+  // Webhook idempotency (prevent duplicate processing)
+  getWebhookDelivery(deliveryId: string): Promise<any | undefined>;
+  saveWebhookDelivery(deliveryId: string, workspaceId: string, event: string): Promise<void>;
+  
+  // Workspace settings operations
+  getWorkspaceSettings(slackTeamId: string): Promise<WorkspaceSettings | undefined>;
+  upsertWorkspaceSettings(settings: WorkspaceSettings): Promise<void>;
+  
+  // Slack installation operations (for OAuth)
+  getSlackInstallation(teamId: string): Promise<SlackInstallation | undefined>;
+  upsertSlackInstallation(installation: SlackInstallation): Promise<void>;
+  deleteSlackInstallation(teamId: string): Promise<void>;
   
   // Member operations
   addMember(member: Member): Promise<void>;
@@ -167,6 +213,9 @@ class MemoryDb implements IDatabase {
   private usage: Map<string, any> = new Map(); // key: workspaceId:month
   private auditLogs: Array<any> = [];
   private jiraConnections: Map<string, JiraConnection> = new Map(); // key: workspaceId
+  private workspaceSettings: Map<string, WorkspaceSettings> = new Map(); // key: slackTeamId
+  private slackInstallations: Map<string, SlackInstallation> = new Map(); // key: teamId
+  private webhookDeliveries: Map<string, any> = new Map(); // key: deliveryId (for idempotency)
   private members: Map<string, Member> = new Map();
   private teams: Map<string, Team> = new Map();
   private repoMappings: Map<string, RepoMapping> = new Map(); // key: workspaceId:repoFullName
@@ -275,6 +324,8 @@ class MemoryDb implements IDatabase {
         slackTeamId,
         plan,
         subscriptionStatus: status,
+        setupComplete: false,
+        setupStep: 'channel',
         polarSubscriptionId: subscriptionId,
         polarCustomerId: customerId,
         currentPeriodEnd: periodEnd,
@@ -343,6 +394,44 @@ class MemoryDb implements IDatabase {
       timestamp: Date.now()
     });
     // Keep only last 10000 logs in memory
+    if (this.auditLogs.length > 10000) {
+      this.auditLogs = this.auditLogs.slice(-10000);
+    }
+  }
+
+  async listAuditLogs(workspaceId: string, limit: number = 100): Promise<any[]> {
+    return this.auditLogs
+      .filter(log => log.workspaceId === workspaceId)
+      .sort((a, b) => b.timestamp - a.timestamp)
+      .slice(0, limit);
+  }
+
+  // Webhook idempotency
+  async getWebhookDelivery(deliveryId: string): Promise<any | undefined> {
+    return this.webhookDeliveries.get(deliveryId);
+  }
+
+  async saveWebhookDelivery(deliveryId: string, workspaceId: string, event: string): Promise<void> {
+    this.webhookDeliveries.set(deliveryId, {
+      deliveryId,
+      workspaceId,
+      event,
+      processedAt: Date.now()
+    });
+    // Keep only last 10000 deliveries in memory
+    if (this.webhookDeliveries.size > 10000) {
+      const entries = Array.from(this.webhookDeliveries.entries());
+      const toKeep = entries.slice(-10000);
+      this.webhookDeliveries.clear();
+      for (const [key, value] of toKeep) {
+        this.webhookDeliveries.set(key, value);
+      }
+    }
+  }
+
+  async addAuditLogLegacy(log: any): Promise<void> {
+    // Legacy method name for backward compatibility
+    return this.addAuditLog(log);
     if (this.auditLogs.length > 10000) {
       this.auditLogs = this.auditLogs.slice(-10000);
     }
@@ -509,6 +598,34 @@ class MemoryDb implements IDatabase {
     return Array.from(this.assignments.values())
       .filter(a => a.slackUserId === slackUserId && a.status !== 'DONE');
   }
+
+  // Workspace settings operations
+  async getWorkspaceSettings(slackTeamId: string): Promise<WorkspaceSettings | undefined> {
+    return this.workspaceSettings.get(slackTeamId);
+  }
+
+  async upsertWorkspaceSettings(settings: WorkspaceSettings): Promise<void> {
+    this.workspaceSettings.set(settings.slackTeamId, {
+      ...settings,
+      updatedAt: Date.now()
+    });
+  }
+
+  // Slack installation operations (for OAuth)
+  async getSlackInstallation(teamId: string): Promise<SlackInstallation | undefined> {
+    return this.slackInstallations.get(teamId);
+  }
+
+  async upsertSlackInstallation(installation: SlackInstallation): Promise<void> {
+    this.slackInstallations.set(installation.teamId, {
+      ...installation,
+      updatedAt: Date.now()
+    });
+  }
+
+  async deleteSlackInstallation(teamId: string): Promise<void> {
+    this.slackInstallations.delete(teamId);
+  }
 }
 
 // Export database instance - will be initialized in index.ts
@@ -526,4 +643,26 @@ export function createDb(usePostgres: boolean, connectionString?: string): Memor
 
 // Default to in-memory for backwards compatibility
 db = new MemoryDb();
+
+/**
+ * Set the database instance (dependency injection)
+ * Called from src/index.ts after DB initialization
+ */
+export function setDb(dbInstance: IDatabase): void {
+  db = dbInstance;
+  logger.info('Database instance set', { 
+    type: dbInstance instanceof MemoryDb ? 'memory' : 'postgres' 
+  });
+}
+
+/**
+ * Get the current database instance
+ */
+export function getDb(): IDatabase {
+  if (!db) {
+    logger.warn('Database instance not set, using default in-memory DB');
+    db = new MemoryDb();
+  }
+  return db;
+}
 

@@ -34,10 +34,106 @@ function prId(): string {
   return `pr_${Date.now()}_${Math.random().toString(16).slice(2)}`;
 }
 
+/**
+ * Handle GitHub installation webhook (for GitHub App installation)
+ */
+async function handleInstallationWebhook(req: Request, res: Response, slackApp: App): Promise<void> {
+  try {
+    const payload: any = req.body;
+    const action = payload?.action;
+    const installation = payload?.installation;
+    
+    if (!installation?.id) {
+      logger.warn('GitHub installation webhook missing installation ID');
+      res.status(400).json({ error: 'Missing installation ID' });
+      return;
+    }
+
+    const installationId = String(installation.id);
+    const accountLogin = installation.account?.login;
+
+    // For now, we'll need to match installation to workspace
+    // Option 1: Check if workspace already has this installation ID
+    let workspace = await db.getWorkspaceByGitHubInstallation(installationId);
+    
+    if (!workspace && action === 'created') {
+      // New installation - we need to find workspace by connect token
+      // For now, log and require manual mapping
+      logger.info('New GitHub installation detected', {
+        installationId,
+        accountLogin,
+        action
+      });
+      
+      // TODO: Implement connect token flow
+      // For now, workspace will be linked when user connects via /connect/github
+      res.status(200).json({ message: 'Installation received, awaiting workspace link' });
+      return;
+    }
+
+    if (workspace) {
+      // Update workspace with installation info
+      await db.updateWorkspace(workspace.id, {
+        githubInstallationId: installationId,
+        githubAccount: accountLogin,
+        updatedAt: Date.now()
+      });
+
+      // Update workspace settings
+      const settings = await db.getWorkspaceSettings(workspace.slackTeamId);
+      if (settings) {
+        await db.upsertWorkspaceSettings({
+          ...settings,
+          githubInstallationId: installationId,
+          updatedAt: Date.now()
+        });
+      }
+
+      logger.info('GitHub installation linked to workspace', {
+        workspaceId: workspace.id,
+        installationId,
+        accountLogin
+      });
+
+      await db.addAuditLog({
+        workspaceId: workspace.id,
+        event: 'github_installation_updated',
+        metadata: {
+          installationId,
+          accountLogin,
+          action
+        }
+      });
+    }
+
+    res.status(200).json({ received: true });
+  } catch (error: any) {
+    logger.error('Error handling GitHub installation webhook', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+}
+
 export function githubWebhookHandlerFactory(args: { slackApp: App }) {
   return async function githubWebhookHandler(req: Request, res: Response) {
     try {
+      // Check idempotency (prevent duplicate processing)
+      const deliveryId = String(req.headers['x-github-delivery'] ?? '');
+      if (deliveryId) {
+        const existing = await db.getWebhookDelivery(deliveryId);
+        if (existing) {
+          logger.info('Duplicate webhook delivery ignored', { deliveryId, event: existing.event });
+          return res.status(200).json({ message: 'Already processed' });
+        }
+      }
+
       const event = String(req.headers['x-github-event'] ?? '');
+      
+      // Handle installation webhook (for GitHub App installation)
+      if (event === 'installation' || event === 'installation_repositories') {
+        await handleInstallationWebhook(req, res, args.slackApp);
+        return;
+      }
+      
       if (event !== 'pull_request') {
         res.status(200).send('ignored');
         return;
@@ -81,6 +177,31 @@ export function githubWebhookHandlerFactory(args: { slackApp: App }) {
         });
       }
 
+      // Check if setup is complete - gate PR notifications until setup is done
+      if (!workspace.setupComplete) {
+        logger.info('PR webhook received but setup not complete', {
+          workspaceId: workspace.id,
+          repoFullName,
+          prNumber: number
+        });
+        
+        // Send DM to installer/admin if available
+        if (workspace.installerUserId) {
+          try {
+            await args.slackApp.client.chat.postMessage({
+              channel: workspace.installerUserId,
+              text: `⚠️ *ReviewFlow Setup Required*\n\nA PR was opened in \`${repoFullName}\` (#${number}), but ReviewFlow setup is not complete.\n\nPlease complete the setup wizard in the Home Tab to start receiving PR notifications.`
+            });
+          } catch (e) {
+            logger.error('Failed to send setup notification to installer', e);
+          }
+        }
+        
+        return res.status(200).json({ 
+          message: 'PR received, but setup not complete. Admin has been notified.' 
+        });
+      }
+
       // Load workspace context
       const context = await loadWorkspaceContext(workspace.slackTeamId);
       
@@ -113,14 +234,40 @@ export function githubWebhookHandlerFactory(args: { slackApp: App }) {
       if (['opened', 'ready_for_review', 'reopened'].includes(action)) {
         const existing = await db.findPr(workspace.id, repoFullName, number);
 
-        // Determine channel - use team channel if available, otherwise workspace default
-        let slackChannelId = workspace.defaultChannelId || env.SLACK_DEFAULT_CHANNEL_ID || '';
-        if (teamId) {
-          const team = await db.getTeam(teamId);
-          if (team?.slackChannelId) {
-            slackChannelId = team.slackChannelId;
+      // Determine channel - use team channel if available, otherwise workspace default
+      // Load workspace settings for default channel
+      const settings = await db.getWorkspaceSettings(workspace.slackTeamId);
+      let slackChannelId = settings?.defaultChannelId || workspace.defaultChannelId || '';
+      
+      if (teamId) {
+        const team = await db.getTeam(teamId);
+        if (team?.slackChannelId) {
+          slackChannelId = team.slackChannelId;
+        }
+      }
+      
+      // If still no channel, post ephemeral message to admin
+      if (!slackChannelId) {
+        logger.warn('No channel configured for PR notification', {
+          workspaceId: workspace.id,
+          repoFullName
+        });
+        // Try to find an admin user to notify
+        const members = await db.listMembers(workspace.id);
+        const adminMember = members.find((m: any) => m.roles?.includes('ADMIN' as any));
+        if (adminMember) {
+          try {
+            await args.slackApp.client.chat.postEphemeral({
+              channel: workspace.slackTeamId, // Use team ID as fallback
+              user: adminMember.slackUserId,
+              text: `⚠️ *ReviewFlow Setup Required*\n\nA PR was opened in \`${repoFullName}\` but no default channel is configured.\n\nPlease run \`/cr settings\` to set your default channel.`
+            });
+          } catch (e) {
+            logger.error('Failed to send setup notification', e);
           }
         }
+        return res.status(200).json({ message: 'PR received, but no channel configured' });
+      }
 
         const record = await db.upsertPr({
           id: existing?.id ?? prId(),
@@ -152,14 +299,25 @@ export function githubWebhookHandlerFactory(args: { slackApp: App }) {
           const month = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
           await db.incrementUsage(context.workspaceId, month);
 
+          // Check if usage limit exceeded after increment
+          const updatedUsage = await db.getUsage(context.workspaceId, month);
+          if (updatedUsage && updatedUsage.prsProcessed > updatedUsage.limit) {
+            logger.warn('Usage limit exceeded after PR processing', {
+              workspaceId: context.workspaceId,
+              usage: updatedUsage
+            });
+          }
+          
           // Add audit log
           await db.addAuditLog({
             workspaceId: context.workspaceId,
             event: 'pr_opened',
-            prId: record.id,
-            prNumber: record.number,
-            repoFullName: record.repoFullName,
-            authorGithub: record.authorGithub
+            metadata: {
+              prId: record.id,
+              prNumber: record.number,
+              repoFullName: record.repoFullName,
+              authorGithub: record.authorGithub
+            }
           });
 
           const reviewers = await pickReviewers({
@@ -188,6 +346,10 @@ export function githubWebhookHandlerFactory(args: { slackApp: App }) {
         const jiraConnection = await db.getJiraConnection(workspace.id);
         const jiraEnabled = jiraConnection && hasFeature(context, 'jiraIntegration');
         const jira = jiraEnabled ? new JiraService(jiraConnection) : undefined;
+        
+        // Use Jira connection's transition settings if available
+        const prOpenedTransition = jiraConnection?.prOpenedTransition || env.JIRA_OPEN_TRANSITION_NAME;
+        const prMergedTransition = jiraConnection?.prMergedTransition || env.JIRA_MERGE_TRANSITION_NAME;
         
         // Auto-create Jira ticket if enabled and no ticket exists
         if (jira && !issueKey && env.JIRA_AUTO_CREATE_ON_PR_OPEN && env.JIRA_PROJECT_KEY) {
@@ -246,8 +408,8 @@ export function githubWebhookHandlerFactory(args: { slackApp: App }) {
             }
 
             await jira.addComment(issueKey, `Linked PR: ${url} (${repoFullName} #${number})`);
-            if (env.JIRA_AUTO_TRANSITION_ON_OPEN) {
-              await jira.transitionByName(issueKey, env.JIRA_OPEN_TRANSITION_NAME);
+            if (env.JIRA_AUTO_TRANSITION_ON_OPEN && prOpenedTransition) {
+              await jira.transitionByName(issueKey, prOpenedTransition);
             }
           } catch (e) {
             // לא מפילים את ה-flow על Jira

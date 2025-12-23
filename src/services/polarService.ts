@@ -134,7 +134,7 @@ export class PolarService {
   }
 
   /**
-   * Handle webhook event
+   * Handle webhook event (returns processed result)
    */
   async handleWebhookEvent(event: PolarWebhookEvent): Promise<{
     slackTeamId?: string;

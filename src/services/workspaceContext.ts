@@ -35,10 +35,22 @@ export async function loadWorkspaceContext(slackTeamId: string): Promise<Workspa
         plan: 'free',
         subscriptionStatus: 'active',
         defaultChannelId: undefined, // Will be set via settings
+        setupComplete: false, // Setup wizard not complete
+        setupStep: 'channel', // Start with channel selection
         createdAt: Date.now(),
         updatedAt: Date.now()
       };
       await db.addWorkspace(workspace);
+      
+      // Create default workspace settings
+      await db.upsertWorkspaceSettings({
+        slackTeamId,
+        requiredReviewers: 2,
+        reminderHours: 24,
+        reminderEscalationHours: 48,
+        createdAt: Date.now(),
+        updatedAt: Date.now()
+      });
       
       // Create default FREE subscription (legacy)
       await db.upsertSubscription({
@@ -52,6 +64,18 @@ export async function loadWorkspaceContext(slackTeamId: string): Promise<Workspa
       // Log workspace creation
       const { logInstallation } = require('../utils/auditLog');
       await logInstallation(workspaceId, '', 'slack');
+    }
+
+    // Load workspace settings (per-workspace configuration)
+    const settings = await db.getWorkspaceSettings(slackTeamId);
+    if (settings) {
+      // Merge settings into workspace (for backward compatibility)
+      if (settings.defaultChannelId) {
+        workspace.defaultChannelId = settings.defaultChannelId;
+      }
+      if (settings.githubInstallationId) {
+        workspace.githubInstallationId = settings.githubInstallationId;
+      }
     }
 
     // Get subscription (use workspace plan if available, otherwise legacy subscription)

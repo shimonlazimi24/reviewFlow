@@ -102,6 +102,138 @@ export class PostgresDb {
       CREATE INDEX IF NOT EXISTS idx_assignments_member_id ON assignments(member_id);
       CREATE INDEX IF NOT EXISTS idx_assignments_slack_user_id ON assignments(slack_user_id);
       CREATE INDEX IF NOT EXISTS idx_prs_repo_number ON prs(repo_full_name, number);
+
+      -- Workspaces table
+      CREATE TABLE IF NOT EXISTS workspaces (
+        id VARCHAR(255) PRIMARY KEY,
+        slack_team_id VARCHAR(255) UNIQUE NOT NULL,
+        name VARCHAR(255),
+        plan VARCHAR(20) NOT NULL DEFAULT 'free',
+        default_channel_id VARCHAR(255),
+        setup_channel_id VARCHAR(255),
+        installer_user_id VARCHAR(255),
+        setup_complete BOOLEAN NOT NULL DEFAULT false,
+        setup_step VARCHAR(50),
+        polar_customer_id VARCHAR(255),
+        polar_subscription_id VARCHAR(255),
+        subscription_status VARCHAR(20) NOT NULL DEFAULT 'active',
+        current_period_end BIGINT,
+        github_installation_id VARCHAR(255),
+        github_account VARCHAR(255),
+        created_at BIGINT NOT NULL,
+        updated_at BIGINT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_workspaces_slack_team_id ON workspaces(slack_team_id);
+      CREATE INDEX IF NOT EXISTS idx_workspaces_github_installation ON workspaces(github_installation_id);
+
+      -- Workspace settings table (per-workspace configuration)
+      CREATE TABLE IF NOT EXISTS workspace_settings (
+        slack_team_id VARCHAR(255) PRIMARY KEY REFERENCES workspaces(slack_team_id) ON DELETE CASCADE,
+        default_channel_id VARCHAR(255),
+        github_installation_id VARCHAR(255),
+        jira_base_url VARCHAR(255),
+        jira_email VARCHAR(255),
+        jira_api_token_encrypted TEXT,
+        required_reviewers INTEGER DEFAULT 2,
+        reminder_hours INTEGER DEFAULT 24,
+        reminder_escalation_hours INTEGER DEFAULT 48,
+        created_at TIMESTAMP DEFAULT NOW(),
+        updated_at TIMESTAMP DEFAULT NOW()
+      );
+
+      -- Jira connections table
+      CREATE TABLE IF NOT EXISTS jira_connections (
+        id VARCHAR(255) PRIMARY KEY,
+        workspace_id VARCHAR(255) NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+        base_url VARCHAR(255) NOT NULL,
+        email VARCHAR(255) NOT NULL,
+        api_token TEXT NOT NULL,
+        pr_opened_transition VARCHAR(255),
+        pr_merged_transition VARCHAR(255),
+        created_at BIGINT NOT NULL,
+        updated_at BIGINT NOT NULL,
+        UNIQUE(workspace_id)
+      );
+      
+      -- Add transition columns if they don't exist (migration)
+      DO $$
+      BEGIN
+        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'jira_connections' AND column_name = 'pr_opened_transition') THEN
+          ALTER TABLE jira_connections ADD COLUMN pr_opened_transition VARCHAR(255);
+          ALTER TABLE jira_connections ADD COLUMN pr_merged_transition VARCHAR(255);
+        END IF;
+      END $$;
+      CREATE INDEX IF NOT EXISTS idx_jira_connections_workspace_id ON jira_connections(workspace_id);
+
+      -- Slack installations table (for OAuth)
+      CREATE TABLE IF NOT EXISTS slack_installations (
+        team_id VARCHAR(255) PRIMARY KEY,
+        bot_token TEXT NOT NULL,
+        bot_id VARCHAR(255),
+        bot_user_id VARCHAR(255),
+        installer_user_id VARCHAR(255),
+        team_name VARCHAR(255),
+        installed_at TIMESTAMP DEFAULT NOW(),
+        updated_at TIMESTAMP DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS idx_slack_installations_team_id ON slack_installations(team_id);
+
+      -- Usage tracking table
+      CREATE TABLE IF NOT EXISTS usage (
+        workspace_id VARCHAR(255) NOT NULL,
+        month VARCHAR(7) NOT NULL,
+        prs_processed INTEGER NOT NULL DEFAULT 0,
+        limit_value INTEGER NOT NULL,
+        reset_at BIGINT NOT NULL,
+        PRIMARY KEY (workspace_id, month)
+      );
+
+      -- Audit logs table
+      CREATE TABLE IF NOT EXISTS audit_logs (
+        id VARCHAR(255) PRIMARY KEY,
+        workspace_id VARCHAR(255) NOT NULL,
+        event VARCHAR(50) NOT NULL,
+        metadata JSONB,
+        timestamp BIGINT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_audit_logs_workspace_id ON audit_logs(workspace_id);
+      CREATE INDEX IF NOT EXISTS idx_audit_logs_timestamp ON audit_logs(timestamp);
+
+      -- Teams table
+      CREATE TABLE IF NOT EXISTS teams (
+        id VARCHAR(255) PRIMARY KEY,
+        workspace_id VARCHAR(255) NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+        name VARCHAR(255) NOT NULL,
+        slack_channel_id VARCHAR(255),
+        is_active BOOLEAN NOT NULL DEFAULT true,
+        created_at BIGINT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_teams_workspace_id ON teams(workspace_id);
+
+      -- Repo mappings table
+      CREATE TABLE IF NOT EXISTS repo_mappings (
+        id VARCHAR(255) PRIMARY KEY,
+        workspace_id VARCHAR(255) NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+        team_id VARCHAR(255) REFERENCES teams(id) ON DELETE SET NULL,
+        repo_full_name VARCHAR(255) NOT NULL,
+        created_at BIGINT NOT NULL,
+        UNIQUE(workspace_id, repo_full_name)
+      );
+      CREATE INDEX IF NOT EXISTS idx_repo_mappings_workspace_id ON repo_mappings(workspace_id);
+      CREATE INDEX IF NOT EXISTS idx_repo_mappings_repo_full_name ON repo_mappings(repo_full_name);
+
+      -- Add workspace_id to existing tables if not present
+      DO $$
+      BEGIN
+        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'members' AND column_name = 'workspace_id') THEN
+          ALTER TABLE members ADD COLUMN workspace_id VARCHAR(255);
+          ALTER TABLE members ADD COLUMN team_id VARCHAR(255);
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'prs' AND column_name = 'workspace_id') THEN
+          ALTER TABLE prs ADD COLUMN workspace_id VARCHAR(255);
+          ALTER TABLE prs ADD COLUMN team_id VARCHAR(255);
+        END IF;
+      END $$;
     `);
   }
 
@@ -387,6 +519,160 @@ export class PostgresDb {
       completedAt: row.completed_at || undefined,
       status: (row.status || 'ASSIGNED') as AssignmentStatus,
       slackUserId: row.slack_user_id || undefined
+    };
+  }
+
+  // Workspace settings operations
+  async getWorkspaceSettings(slackTeamId: string): Promise<any | undefined> {
+    const result = await this.pool.query(
+      'SELECT * FROM workspace_settings WHERE slack_team_id = $1',
+      [slackTeamId]
+    );
+    return result.rows[0] ? this.mapRowToWorkspaceSettings(result.rows[0]) : undefined;
+  }
+
+  async upsertWorkspaceSettings(settings: any): Promise<void> {
+    await this.pool.query(
+      `INSERT INTO workspace_settings (slack_team_id, default_channel_id, github_installation_id, jira_base_url, jira_email, jira_api_token_encrypted, required_reviewers, reminder_hours, reminder_escalation_hours, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW(), NOW())
+       ON CONFLICT (slack_team_id) DO UPDATE SET
+         default_channel_id = EXCLUDED.default_channel_id,
+         github_installation_id = EXCLUDED.github_installation_id,
+         jira_base_url = EXCLUDED.jira_base_url,
+         jira_email = EXCLUDED.jira_email,
+         jira_api_token_encrypted = EXCLUDED.jira_api_token_encrypted,
+         required_reviewers = EXCLUDED.required_reviewers,
+         reminder_hours = EXCLUDED.reminder_hours,
+         reminder_escalation_hours = EXCLUDED.reminder_escalation_hours,
+         updated_at = NOW()`,
+      [
+        settings.slackTeamId,
+        settings.defaultChannelId || null,
+        settings.githubInstallationId || null,
+        settings.jiraBaseUrl || null,
+        settings.jiraEmail || null,
+        settings.jiraApiTokenEncrypted || null,
+        settings.requiredReviewers || 2,
+        settings.reminderHours || 24,
+        settings.reminderEscalationHours || 48
+      ]
+    );
+  }
+
+  private mapRowToWorkspaceSettings(row: any): any {
+    return {
+      slackTeamId: row.slack_team_id,
+      defaultChannelId: row.default_channel_id,
+      githubInstallationId: row.github_installation_id,
+      jiraBaseUrl: row.jira_base_url,
+      jiraEmail: row.jira_email,
+      jiraApiTokenEncrypted: row.jira_api_token_encrypted,
+      requiredReviewers: row.required_reviewers,
+      reminderHours: row.reminder_hours,
+      reminderEscalationHours: row.reminder_escalation_hours,
+      createdAt: row.created_at ? new Date(row.created_at).getTime() : Date.now(),
+      updatedAt: row.updated_at ? new Date(row.updated_at).getTime() : Date.now()
+    };
+  }
+
+  // Slack installation operations (for OAuth)
+  async getSlackInstallation(teamId: string): Promise<any | undefined> {
+    const result = await this.pool.query(
+      'SELECT * FROM slack_installations WHERE team_id = $1',
+      [teamId]
+    );
+    return result.rows[0] ? this.mapRowToSlackInstallation(result.rows[0]) : undefined;
+  }
+
+  async upsertSlackInstallation(installation: any): Promise<void> {
+    await this.pool.query(
+      `INSERT INTO slack_installations (team_id, bot_token, bot_id, bot_user_id, installer_user_id, team_name, installed_at, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6, NOW(), NOW())
+       ON CONFLICT (team_id) DO UPDATE SET
+         bot_token = EXCLUDED.bot_token,
+         bot_id = EXCLUDED.bot_id,
+         bot_user_id = EXCLUDED.bot_user_id,
+         installer_user_id = EXCLUDED.installer_user_id,
+         team_name = EXCLUDED.team_name,
+         updated_at = NOW()`,
+      [
+        installation.teamId,
+        installation.botToken,
+        installation.botId || null,
+        installation.botUserId || null,
+        installation.installerUserId || null,
+        installation.teamName || null
+      ]
+    );
+  }
+
+  async deleteSlackInstallation(teamId: string): Promise<void> {
+    await this.pool.query('DELETE FROM slack_installations WHERE team_id = $1', [teamId]);
+  }
+
+  private mapRowToSlackInstallation(row: any): any {
+    return {
+      teamId: row.team_id,
+      botToken: row.bot_token,
+      botId: row.bot_id,
+      botUserId: row.bot_user_id,
+      installerUserId: row.installer_user_id,
+      teamName: row.team_name,
+      installedAt: row.installed_at ? new Date(row.installed_at).getTime() : Date.now(),
+      updatedAt: row.updated_at ? new Date(row.updated_at).getTime() : Date.now()
+    };
+  }
+
+  // Jira Connection operations
+  async getJiraConnection(workspaceId: string): Promise<any | undefined> {
+    const result = await this.pool.query(
+      'SELECT * FROM jira_connections WHERE workspace_id = $1',
+      [workspaceId]
+    );
+    return result.rows[0] ? this.mapRowToJiraConnection(result.rows[0]) : undefined;
+  }
+
+  async upsertJiraConnection(connection: any): Promise<void> {
+    await this.pool.query(
+      `INSERT INTO jira_connections (id, workspace_id, base_url, email, api_token, pr_opened_transition, pr_merged_transition, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+       ON CONFLICT (workspace_id) DO UPDATE SET
+         base_url = EXCLUDED.base_url,
+         email = EXCLUDED.email,
+         api_token = EXCLUDED.api_token,
+         pr_opened_transition = EXCLUDED.pr_opened_transition,
+         pr_merged_transition = EXCLUDED.pr_merged_transition,
+         updated_at = EXCLUDED.updated_at`,
+      [
+        connection.id,
+        connection.workspaceId,
+        connection.baseUrl,
+        connection.email,
+        connection.tokenEncrypted,
+        connection.prOpenedTransition || null,
+        connection.prMergedTransition || null,
+        connection.createdAt,
+        connection.updatedAt
+      ]
+    );
+  }
+
+  async deleteJiraConnection(workspaceId: string): Promise<void> {
+    await this.pool.query('DELETE FROM jira_connections WHERE workspace_id = $1', [workspaceId]);
+  }
+
+  private mapRowToJiraConnection(row: any): any {
+    return {
+      id: row.id,
+      workspaceId: row.workspace_id,
+      baseUrl: row.base_url,
+      email: row.email,
+      authType: 'basic',
+      tokenEncrypted: row.api_token,
+      prOpenedTransition: row.pr_opened_transition || undefined,
+      prMergedTransition: row.pr_merged_transition || undefined,
+      createdAt: row.created_at ? new Date(row.created_at).getTime() : Date.now(),
+      updatedAt: row.updated_at ? new Date(row.updated_at).getTime() : Date.now()
     };
   }
 

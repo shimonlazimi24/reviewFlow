@@ -6,6 +6,8 @@ import { SubscriptionPlan } from '../types/subscription';
 import { PolarService } from '../services/polarService';
 import { logger } from '../utils/logger';
 import { buildOnboardingChecklist } from './onboarding';
+import { buildOnboardingWizardHomeTab } from './onboardingWizard';
+import { isWorkspaceAdmin } from '../utils/permissions';
 
 export function registerHomeTab(app: App) {
   app.event('app_home_opened', async ({ event, client }) => {
@@ -34,12 +36,46 @@ export function registerHomeTab(app: App) {
       const members = await db.listMembers(workspace.id);
       const activeMembers = members.filter((m: any) => m.isActive && !m.isUnavailable);
 
+      // Check if user is admin
+      const isAdmin = await isWorkspaceAdmin(userId, teamId, client);
+      
+      // If setup is not complete, show onboarding wizard for admins
+      if (!workspace.setupComplete && isAdmin) {
+        const wizardBlocks = await buildOnboardingWizardHomeTab(teamId, userId, client);
+        await client.views.publish({
+          user_id: userId,
+          view: {
+            type: 'home',
+            blocks: wizardBlocks
+          }
+        });
+        return;
+      }
+      
+      // If setup is not complete and user is not admin, show non-admin message
+      if (!workspace.setupComplete && !isAdmin) {
+        await client.views.publish({
+          user_id: userId,
+          view: {
+            type: 'home',
+            blocks: [{
+              type: 'section',
+              text: {
+                type: 'mrkdwn',
+                text: '⚠️ *ReviewFlow is not configured yet.*\n\nAsk your workspace admin to complete the setup.'
+              }
+            }]
+          }
+        });
+        return;
+      }
+
       // Check connections
       const hasGitHub = !!workspace.githubInstallationId;
       const jiraConnection = await db.getJiraConnection(workspace.id);
       const hasJira = !!jiraConnection;
 
-      // Build home tab view
+      // Build home tab view (setup complete)
       const blocks = await buildHomeTabBlocks(
         context, 
         workspacePRs.length, 

@@ -34,15 +34,21 @@ export function initAdminConfig(): void {
 }
 
 /**
- * Check if a user is an admin
+ * Check if a user is a workspace admin (installer or Slack workspace admin/owner)
  */
-export async function isAdmin(slackUserId: string, client?: any): Promise<boolean> {
-  // Check explicit admin list
+export async function isWorkspaceAdmin(slackUserId: string, slackTeamId: string, client?: any): Promise<boolean> {
+  // Check explicit admin list (global admins)
   if (adminConfig.adminSlackUserIds.includes(slackUserId)) {
     return true;
   }
 
-  // Check if workspace admins are allowed
+  // Check if user is the installer for this workspace
+  const workspace = await db.getWorkspaceBySlackTeamId(slackTeamId);
+  if (workspace?.installerUserId === slackUserId) {
+    return true;
+  }
+
+  // Check if workspace admins are allowed and user is workspace admin/owner
   if (adminConfig.allowAllAdmins && client) {
     try {
       const userInfo = await client.users.info({ user: slackUserId });
@@ -58,10 +64,50 @@ export async function isAdmin(slackUserId: string, client?: any): Promise<boolea
 }
 
 /**
- * Require admin access - throws error if not admin
+ * Check if a user is an admin (legacy function, now uses workspace admin check)
  */
-export async function requireAdmin(slackUserId: string, client?: any): Promise<void> {
-  const isUserAdmin = await isAdmin(slackUserId, client);
+export async function isAdmin(slackUserId: string, client?: any, slackTeamId?: string): Promise<boolean> {
+  // If slackTeamId provided, use workspace admin check
+  if (slackTeamId) {
+    return isWorkspaceAdmin(slackUserId, slackTeamId, client);
+  }
+
+  // Fallback to original logic for backward compatibility
+  if (adminConfig.adminSlackUserIds.includes(slackUserId)) {
+    return true;
+  }
+
+  if (adminConfig.allowAllAdmins && client) {
+    try {
+      const userInfo = await client.users.info({ user: slackUserId });
+      if (userInfo.user?.is_admin || userInfo.user?.is_owner) {
+        return true;
+      }
+    } catch (error) {
+      logger.warn('Failed to check user admin status', error);
+    }
+  }
+
+  return false;
+}
+
+/**
+ * Require workspace admin access - throws error if not admin
+ */
+export async function requireWorkspaceAdmin(slackUserId: string, slackTeamId: string, client?: any): Promise<void> {
+  const isUserAdmin = await isWorkspaceAdmin(slackUserId, slackTeamId, client);
+  if (!isUserAdmin) {
+    throw new Error('This action requires workspace admin privileges. Only the installer or workspace admins can perform setup.');
+  }
+}
+
+/**
+ * Require admin access - throws error if not admin (legacy)
+ */
+export async function requireAdmin(slackUserId: string, client?: any, slackTeamId?: string): Promise<void> {
+  const isUserAdmin = slackTeamId 
+    ? await isWorkspaceAdmin(slackUserId, slackTeamId, client)
+    : await isAdmin(slackUserId, client);
   if (!isUserAdmin) {
     throw new Error('This command requires admin privileges. Contact your workspace administrator.');
   }
