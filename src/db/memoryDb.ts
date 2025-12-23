@@ -15,11 +15,18 @@ export interface Team {
   isActive: boolean;
 }
 
+export interface StackRule {
+  glob: string; // e.g., "client/**" or "server/**"
+  stack: Stack; // 'FE' | 'BE' | 'MIXED'
+}
+
 export interface RepoMapping {
   id: string;
   workspaceId: string; // Workspace this mapping belongs to
   teamId: string;
   repoFullName: string; // e.g., "org/repo"
+  requiredReviewers?: number;
+  stackRules?: StackRule[];
   createdAt: number;
 }
 

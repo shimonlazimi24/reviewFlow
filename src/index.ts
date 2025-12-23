@@ -27,12 +27,20 @@ async function main() {
     initAdminConfig();
     // Initialize feature flags
     initFeatureFlags();
-    // Initialize database
+    // Initialize database - enforce Postgres in production
     let db: any;
+    const isProduction = env.NODE_ENV === 'production';
+    
+    if (isProduction && !env.DATABASE_URL) {
+      throw new Error('DATABASE_URL is required in production. In-memory database is not allowed.');
+    }
+    
     if (useDatabase && env.DATABASE_URL) {
       db = createDb(true, env.DATABASE_URL);
       await db.init();
       logger.info('Connected to PostgreSQL database');
+    } else if (isProduction) {
+      throw new Error('PostgreSQL is required in production. Set DATABASE_URL environment variable.');
     } else {
       db = createDb(false);
       logger.warn('Using in-memory database (data will be lost on restart)', {

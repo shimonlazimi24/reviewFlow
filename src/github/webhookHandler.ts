@@ -178,6 +178,7 @@ export function githubWebhookHandlerFactory(args: { slackApp: App }) {
       }
 
       // Check if setup is complete and Go Live is enabled - gate PR notifications
+      // Ensure setup messages only go to setupChannelId or installerUserId (never to public channels)
       if (!workspace.setupComplete) {
         logger.info('PR webhook received but setup not complete', {
           workspaceId: workspace.id,
@@ -186,12 +187,26 @@ export function githubWebhookHandlerFactory(args: { slackApp: App }) {
         });
         
         // Send DM to installer/admin if available (use setup channel if configured)
+        // NEVER send to public notification channels during setup
         const notificationChannel = workspace.setupChannelId || workspace.installerUserId;
         if (notificationChannel) {
           try {
             await args.slackApp.client.chat.postMessage({
               channel: notificationChannel,
               text: `⚠️ *ReviewFlow Setup Required*\n\nA PR was opened in \`${repoFullName}\` (#${number}), but ReviewFlow setup is not complete.\n\nPlease complete the setup wizard in the Home Tab to start receiving PR notifications.`
+            });
+            
+            // Add audit log
+            await db.addAuditLog({
+              id: `audit_${Date.now()}_${Math.random().toString(16).slice(2)}`,
+              workspaceId: workspace.id,
+              event: 'setup_required_notification',
+              metadata: {
+                repoFullName,
+                prNumber: number,
+                notificationChannel
+              },
+              timestamp: Date.now()
             });
           } catch (e) {
             logger.error('Failed to send setup notification', e);
@@ -212,12 +227,26 @@ export function githubWebhookHandlerFactory(args: { slackApp: App }) {
         });
         
         // Send DM to installer/admin (use setup channel if configured)
+        // NEVER send to public notification channels when Go Live is disabled
         const notificationChannel = workspace.setupChannelId || workspace.installerUserId;
         if (notificationChannel) {
           try {
             await args.slackApp.client.chat.postMessage({
               channel: notificationChannel,
               text: `⚠️ *ReviewFlow Not Live Yet*\n\nA PR was opened in \`${repoFullName}\` (#${number}), but PR processing is not enabled.\n\nPlease enable "Go Live" in the Home Tab setup wizard to start processing PRs.`
+            });
+            
+            // Add audit log
+            await db.addAuditLog({
+              id: `audit_${Date.now()}_${Math.random().toString(16).slice(2)}`,
+              workspaceId: workspace.id,
+              event: 'go_live_required_notification',
+              metadata: {
+                repoFullName,
+                prNumber: number,
+                notificationChannel
+              },
+              timestamp: Date.now()
             });
           } catch (e) {
             logger.error('Failed to send Go Live notification', e);
@@ -253,8 +282,52 @@ export function githubWebhookHandlerFactory(args: { slackApp: App }) {
               extractJiraIssueKey(title) ||
               undefined;
 
-            const stack = inferStackFromLabels(pr.labels ?? []);
-            const prMetadata = calcPrSizeFromGitHub(payload);
+            // Fetch PR commits and files using GitHubApiService
+            let commitAuthorLogins: string[] = [];
+            let prFiles: Array<{ filename: string; additions: number; deletions: number; changes: number }> = [];
+            
+            try {
+              const { GitHubApiService } = await import('../services/githubApiService');
+              const githubApi = new GitHubApiService(String(installationId));
+              
+              // Fetch commits to get author logins
+              const commitsResult = await githubApi.listPullRequestCommits(repoFullName, number);
+              commitAuthorLogins = commitsResult.authorLogins;
+              
+              // Fetch files for stack inference
+              const filesResult = await githubApi.listPullRequestFiles(repoFullName, number);
+              prFiles = filesResult.files;
+              
+              logger.info('Fetched PR metadata from GitHub API', {
+                repoFullName,
+                prNumber: number,
+                commitAuthors: commitAuthorLogins.length,
+                files: prFiles.length
+              });
+            } catch (error: any) {
+              logger.warn('Failed to fetch PR metadata from GitHub API', {
+                repoFullName,
+                prNumber: number,
+                error: error.message
+              });
+              // Continue with fallback logic
+            }
+
+            // Infer stack: try labels first, then fallback to path rules
+            const { inferStack } = await import('../utils/stackInference');
+            const stackRules = repoMapping?.stackRules || [];
+            const stack = inferStack(pr.labels ?? [], prFiles, stackRules);
+            
+            // Use PR files for size calculation if available, otherwise use payload
+            const prMetadata = prFiles.length > 0
+              ? {
+                  additions: prFiles.reduce((sum, f) => sum + f.additions, 0),
+                  deletions: prFiles.reduce((sum, f) => sum + f.deletions, 0),
+                  changedFiles: prFiles.length,
+                  totalChanges: prFiles.reduce((sum, f) => sum + f.changes, 0),
+                  size: calcPrSizeFromGitHub(payload).size // Use existing size calculation
+                }
+              : calcPrSizeFromGitHub(payload);
             const size = prMetadata.size;
 
       // opened / ready_for_review / reopened
@@ -337,26 +410,52 @@ export function githubWebhookHandlerFactory(args: { slackApp: App }) {
           
           // Add audit log
           await db.addAuditLog({
+            id: `audit_${Date.now()}_${Math.random().toString(16).slice(2)}`,
             workspaceId: context.workspaceId,
             event: 'pr_opened',
             metadata: {
               prId: record.id,
               prNumber: record.number,
               repoFullName: record.repoFullName,
-              authorGithub: record.authorGithub
-            }
+              authorGithub: record.authorGithub,
+              stack: record.stack,
+              size: record.size
+            },
+            timestamp: Date.now()
           });
 
+          // Get required reviewers from repo mapping or default to 2
+          const requiredReviewers = repoMapping?.requiredReviewers || settings?.requiredReviewers || 2;
+          
           const reviewers = await pickReviewers({
             workspaceId: workspace.id,
             stack: record.stack === 'MIXED' ? 'MIXED' : record.stack,
-            requiredReviewers: 1,
+            requiredReviewers,
             authorGithub: record.authorGithub,
-            teamId: record.teamId
+            teamId: record.teamId,
+            excludeCommitAuthors: true,
+            commitAuthorLogins
           });
 
           if (reviewers.length > 0) {
-            await db.createAssignments(record.id, reviewers.map(r => r.id));
+            const assignments = await db.createAssignments(record.id, reviewers.map(r => r.id));
+            
+            // Add audit log for reviewer assignments
+            for (const assignment of assignments) {
+              await db.addAuditLog({
+                id: `audit_${Date.now()}_${Math.random().toString(16).slice(2)}`,
+                workspaceId: context.workspaceId,
+                event: 'reviewer_assigned',
+                metadata: {
+                  prId: record.id,
+                  prNumber: record.number,
+                  assignmentId: assignment.id,
+                  memberId: assignment.memberId,
+                  stack: record.stack
+                },
+                timestamp: Date.now()
+              });
+            }
           }
         }
 

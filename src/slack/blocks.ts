@@ -172,7 +172,7 @@ export function buildPrMessageBlocks(args: BuildPrMessageBlocksArgs): (Block | K
         },
         style: 'danger',
         value: `${pr.id}`,
-        action_id: 'reassign_pr'
+        action_id: 'reassign_pr_modal' // Use modal for better UX
       });
     }
 

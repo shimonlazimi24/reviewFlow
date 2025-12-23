@@ -22,15 +22,40 @@ export async function pickReviewers(args: {
   authorGithub: string;
   excludeMemberIds?: string[]; // Optional: exclude specific members (e.g., for reassignment)
   teamId?: string; // Optional: filter by team
+  excludeCommitAuthors?: boolean; // Default: true - exclude commit authors
+  commitAuthorLogins?: string[]; // GitHub usernames of commit authors
 }): Promise<Member[]> {
-  const { workspaceId, stack, requiredReviewers, authorGithub, excludeMemberIds = [], teamId } = args;
+  const { 
+    workspaceId, 
+    stack, 
+    requiredReviewers, 
+    authorGithub, 
+    excludeMemberIds = [], 
+    teamId,
+    excludeCommitAuthors = true,
+    commitAuthorLogins = []
+  } = args;
+  
   const members = await db.listMembers(workspaceId, teamId);
+
+  // Build set of GitHub usernames to exclude
+  const excludeGithubUsernames = new Set<string>();
+  if (excludeCommitAuthors) {
+    excludeGithubUsernames.add(authorGithub);
+    commitAuthorLogins.forEach(login => excludeGithubUsernames.add(login));
+  }
 
   const candidates = await Promise.all(
     members
       .filter((m: Member) => m.isActive)
       .filter((m: Member) => !m.isUnavailable) // Skip unavailable members (sick/vacation)
-      .filter((m: Member) => !m.githubUsernames.includes(authorGithub)) // לא להקצות למחבר
+      .filter((m: Member) => {
+        // Exclude if any of member's GitHub usernames match excluded authors
+        if (excludeCommitAuthors) {
+          return !m.githubUsernames.some(ghUser => excludeGithubUsernames.has(ghUser));
+        }
+        return true;
+      })
       .filter((m: Member) => !excludeMemberIds.includes(m.id)) // Exclude specific members
       .filter((m: Member) => {
         if (stack === 'MIXED') return true;

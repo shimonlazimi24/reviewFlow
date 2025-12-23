@@ -2281,5 +2281,447 @@ export function registerSlackHandlers(app: App) {
       });
     }
   });
+
+  // Step G: Go Live - with validation
+  app.action('wizard_step_go_live', async ({ ack, body, client }) => {
+    await ack();
+    const actionBody = body as any;
+    const userId = actionBody.user?.id;
+    const slackTeamId = actionBody.team?.id || '';
+    const workspaceId = actionBody.actions?.[0]?.value;
+
+    if (!userId || !slackTeamId || !workspaceId) return;
+
+    try {
+      await requireWorkspaceAdmin(userId, slackTeamId, client);
+      
+      const workspace = await db.getWorkspace(workspaceId);
+      if (!workspace) {
+        throw new Error('Workspace not found');
+      }
+
+      // Validate prerequisites for Go Live
+      const settings = await db.getWorkspaceSettings(slackTeamId);
+      const hasChannel = !!(settings?.defaultChannelId || workspace.defaultChannelId);
+      const hasGitHub = !!workspace.githubInstallationId;
+      const teams = await db.listTeams(workspaceId);
+      const hasTeams = teams.length > 0;
+      const repoMappings = await db.listRepoMappings(workspaceId);
+      const hasRepoMappings = repoMappings.length > 0;
+      const members = await db.listMembers(workspaceId);
+      const activeMembers = members.filter((m: any) => m.isActive && !m.isUnavailable);
+      const hasMembers = activeMembers.length > 0;
+      
+      // Check if members are assigned to teams used by repo mappings
+      let hasValidMemberTeamMapping = false;
+      if (hasRepoMappings && hasMembers) {
+        const teamIdsInMappings = new Set(repoMappings.map((rm: any) => rm.teamId).filter(Boolean));
+        if (teamIdsInMappings.size === 0) {
+          // If no team mappings, any member is valid
+          hasValidMemberTeamMapping = true;
+        } else {
+          // Check if at least one member is in a team that's used by a repo mapping
+          hasValidMemberTeamMapping = activeMembers.some((m: any) => 
+            m.teamId && teamIdsInMappings.has(m.teamId)
+          );
+        }
+      } else if (hasMembers && !hasRepoMappings) {
+        // If no repo mappings, any member is valid
+        hasValidMemberTeamMapping = true;
+      }
+
+      const validationErrors: string[] = [];
+      if (!hasChannel) {
+        validationErrors.push('• Notification channel not selected');
+      }
+      if (!hasGitHub) {
+        validationErrors.push('• GitHub not connected');
+      }
+      if (!hasTeams) {
+        validationErrors.push('• No teams created');
+      }
+      if (!hasRepoMappings) {
+        validationErrors.push('• No repository mappings configured');
+      }
+      if (!hasMembers) {
+        validationErrors.push('• No active team members added');
+      }
+      if (!hasValidMemberTeamMapping && hasRepoMappings) {
+        validationErrors.push('• No team members assigned to teams used by repository mappings');
+      }
+
+      if (validationErrors.length > 0) {
+        await client.chat.postEphemeral({
+          channel: userId,
+          user: userId,
+          text: `❌ *Cannot enable Go Live*\n\nThe following requirements are missing:\n\n${validationErrors.join('\n')}\n\nPlease complete all setup steps before enabling PR processing.`
+        });
+        return;
+      }
+
+      // All validations passed - enable Go Live
+      await db.updateWorkspace(workspaceId, {
+        goLiveEnabled: true,
+        setupComplete: true,
+        setupStep: 'complete',
+        updatedAt: Date.now()
+      });
+
+      // Add audit log
+      await db.addAuditLog({
+        id: `audit_${Date.now()}_${Math.random().toString(16).slice(2)}`,
+        workspaceId,
+        event: 'go_live_enabled',
+        metadata: {
+          enabledBy: userId,
+          timestamp: Date.now()
+        },
+        timestamp: Date.now()
+      });
+
+      // Notify in setup channel or DM
+      const notificationChannel = workspace.setupChannelId || workspace.installerUserId || userId;
+      try {
+        await client.chat.postMessage({
+          channel: notificationChannel,
+          text: `🎉 *ReviewFlow is now Live!*\n\nPR processing has been enabled. When PRs are opened in your configured repositories, reviewers will be automatically assigned based on your team configuration.\n\n• GitHub: ✅ Connected\n• Teams: ${teams.length} configured\n• Repositories: ${repoMappings.length} mapped\n• Members: ${activeMembers.length} active\n\nPR notifications will be posted to <#${settings?.defaultChannelId || workspace.defaultChannelId}>.`
+        });
+      } catch (e) {
+        logger.warn('Failed to send Go Live notification', e);
+      }
+
+      await client.chat.postEphemeral({
+        channel: userId,
+        user: userId,
+        text: `✅ *Go Live Enabled!*\n\nReviewFlow is now processing PRs. When PRs are opened, reviewers will be automatically assigned.`
+      });
+
+      // Refresh home tab
+      await client.views.publish({
+        user_id: userId,
+        view: { type: 'home', blocks: [] }
+      });
+    } catch (error: any) {
+      logger.error('Error enabling Go Live', error);
+      await client.chat.postEphemeral({
+        channel: userId,
+        user: userId,
+        text: `❌ Failed to enable Go Live: ${error.message}`
+      });
+    }
+  });
+
+  // Reassign reviewer with modal selection
+  app.action('reassign_pr_modal', async ({ ack, body, client }) => {
+    await ack();
+    const actionBody = body as any;
+    const userId = actionBody.user?.id;
+    const prId = actionBody.actions?.[0]?.value;
+    const slackTeamId = actionBody.team?.id;
+
+    if (!userId || !prId || !slackTeamId) return;
+
+    try {
+      const pr = await db.getPr(prId);
+      if (!pr) {
+        await client.chat.postEphemeral({
+          channel: userId,
+          user: userId,
+          text: '❌ PR not found.'
+        });
+        return;
+      }
+
+      const workspace = await db.getWorkspaceBySlackTeamId(slackTeamId);
+      if (!workspace) {
+        throw new Error('Workspace not found');
+      }
+
+      // Get current assignments
+      const assignments = await db.getAssignmentsForPr(prId);
+      const currentAssignmentIds = assignments.filter((a: any) => !a.completedAt).map((a: any) => a.memberId);
+
+      // Get available members (excluding current reviewers and commit authors)
+      const members = await db.listMembers(workspace.id, pr.teamId);
+      const availableMembers = members.filter((m: any) => 
+        m.isActive && 
+        !m.isUnavailable && 
+        !currentAssignmentIds.includes(m.id) &&
+        !m.githubUsernames.includes(pr.authorGithub)
+      );
+
+      if (availableMembers.length === 0) {
+        await client.chat.postEphemeral({
+          channel: userId,
+          user: userId,
+          text: '❌ No available reviewers found. All team members might be unavailable or already assigned.'
+        });
+        return;
+      }
+
+      // Build modal with member selection
+      const modal: any = {
+        type: 'modal' as const,
+        callback_id: 'reassign_pr_submit',
+        title: { type: 'plain_text' as const, text: 'Reassign Reviewer' },
+        submit: { type: 'plain_text' as const, text: 'Reassign' },
+        close: { type: 'plain_text' as const, text: 'Cancel' },
+        private_metadata: JSON.stringify({ prId, currentAssignmentIds }),
+        blocks: [
+          {
+            type: 'section',
+            text: {
+              type: 'mrkdwn',
+              text: `*Reassign reviewer for PR #${pr.number}*\n${pr.title}\n\nSelect a new reviewer from your team.`
+            }
+          },
+          {
+            type: 'input',
+            block_id: 'new_reviewer',
+            label: { type: 'plain_text', text: 'New Reviewer' },
+            element: {
+              type: 'static_select',
+              action_id: 'reviewer',
+              options: availableMembers.map((m: any) => ({
+                text: { type: 'plain_text', text: `${m.githubUsernames.join(', ')} (${m.roles.join(', ')})` },
+                value: m.id
+              })),
+              placeholder: { type: 'plain_text', text: 'Select a reviewer' }
+            }
+          }
+        ]
+      };
+
+      await client.views.open({
+        trigger_id: actionBody.trigger_id,
+        view: modal
+      });
+    } catch (error: any) {
+      logger.error('Error opening reassign modal', error);
+      await client.chat.postEphemeral({
+        channel: userId,
+        user: userId,
+        text: `❌ Failed to open reassign modal: ${error.message}`
+      });
+    }
+  });
+
+  // Reassign PR modal submit
+  app.view('reassign_pr_submit', async ({ ack, body, client, view }) => {
+    await ack();
+    const userId = body.user.id;
+    const slackTeamId = body.team?.id || '';
+    const metadata = JSON.parse(view.private_metadata);
+    const { prId, currentAssignmentIds } = metadata;
+    const newReviewerId = view.state.values.new_reviewer?.reviewer?.selected_option?.value;
+
+    if (!newReviewerId) {
+      await client.chat.postEphemeral({
+        channel: userId,
+        user: userId,
+        text: '❌ Please select a reviewer.'
+      });
+      return;
+    }
+
+    try {
+      const pr = await db.getPr(prId);
+      if (!pr) {
+        throw new Error('PR not found');
+      }
+
+      // Mark old assignments as done
+      const assignments = await db.getAssignmentsForPr(prId);
+      for (const assignment of assignments) {
+        if (!assignment.completedAt && currentAssignmentIds.includes(assignment.memberId)) {
+          await db.updateAssignmentStatus(assignment.id, 'DONE');
+        }
+      }
+
+      // Create new assignment
+      await db.createAssignments(prId, [newReviewerId]);
+
+      // Add audit log
+      const workspace = await db.getWorkspaceBySlackTeamId(slackTeamId);
+      if (workspace) {
+        await db.addAuditLog({
+          id: `audit_${Date.now()}_${Math.random().toString(16).slice(2)}`,
+          workspaceId: workspace.id,
+          event: 'reviewer_reassigned',
+          metadata: {
+            prId,
+            prNumber: pr.number,
+            oldReviewerIds: currentAssignmentIds,
+            newReviewerId,
+            reassignedBy: userId
+          },
+          timestamp: Date.now()
+        });
+      }
+
+      // Update Slack message
+      if (pr.slackMessageTs) {
+        const updatedAssignments = await db.getAssignmentsForPr(prId);
+        const reviewerPromises = updatedAssignments
+          .filter((a: any) => !a.completedAt)
+          .map((a: any) => db.getMember(a.memberId));
+        const reviewerResults = await Promise.all(reviewerPromises);
+        const reviewers = reviewerResults.filter((m): m is NonNullable<typeof m> => m !== undefined);
+
+        let jiraInfo = undefined;
+        if (pr.jiraIssueKey && workspace) {
+          try {
+            const context = await loadWorkspaceContext(slackTeamId);
+            const jiraConnection = await db.getJiraConnection(workspace.id);
+            if (jiraConnection && hasFeature(context, 'jiraIntegration')) {
+              const jira = new JiraService(jiraConnection);
+              jiraInfo = await jira.getIssueMinimal(pr.jiraIssueKey);
+            }
+          } catch (e) {
+            logger.warn('Failed to fetch Jira info for reassign', e);
+          }
+        }
+
+        const blocks = buildPrMessageBlocks({ pr, reviewers, jira: jiraInfo });
+
+        try {
+          await client.chat.update({
+            channel: pr.slackChannelId,
+            ts: pr.slackMessageTs,
+            text: `PR #${pr.number}: ${pr.title}`,
+            blocks
+          });
+        } catch (updateError) {
+          logger.warn('Failed to update Slack message on reassign', updateError);
+        }
+      }
+
+      const newReviewer = await db.getMember(newReviewerId);
+      if (newReviewer) {
+        // Notify new reviewer
+        try {
+          await client.chat.postMessage({
+            channel: newReviewer.slackUserId,
+            text: `📋 *PR Reassigned to You*\n\nPR #${pr.number}: ${pr.title}\nRepository: ${pr.repoFullName}\nAuthor: ${pr.authorGithub}\n\n<${pr.url}|View PR on GitHub>`
+          });
+        } catch (dmError) {
+          logger.warn(`Failed to send DM to new reviewer ${newReviewer.slackUserId}`, dmError);
+        }
+
+        await client.chat.postEphemeral({
+          channel: userId,
+          user: userId,
+          text: `✅ PR reassigned to <@${newReviewer.slackUserId}>.`
+        });
+      }
+    } catch (error: any) {
+      logger.error('Error reassigning PR', error);
+      await client.chat.postEphemeral({
+        channel: userId,
+        user: userId,
+        text: `❌ Failed to reassign PR: ${error.message}`
+      });
+    }
+  });
+
+  // Repository configuration action
+  app.action('configure_repo', async ({ ack, body, client }) => {
+    await ack();
+    const actionBody = body as any;
+    const userId = actionBody.user?.id;
+    const slackTeamId = actionBody.team?.id || '';
+    const metadata = actionBody.actions?.[0]?.value;
+    const { workspaceId, repoFullName } = JSON.parse(metadata || '{}');
+
+    if (!userId || !slackTeamId || !workspaceId || !repoFullName) return;
+
+    try {
+      await requireWorkspaceAdmin(userId, slackTeamId, client);
+      
+      const repoMapping = await db.getRepoMapping(workspaceId, repoFullName);
+      const existingRules = repoMapping?.stackRules || [];
+      const requiredReviewers = repoMapping?.requiredReviewers || 2;
+
+      const { buildRepoConfigModal } = await import('./repoConfigModal');
+      const modal = buildRepoConfigModal(workspaceId, repoFullName, existingRules, requiredReviewers);
+      
+      await client.views.open({
+        trigger_id: actionBody.trigger_id,
+        view: modal
+      });
+    } catch (error: any) {
+      logger.error('Error opening repo config modal', error);
+      await client.chat.postEphemeral({
+        channel: userId,
+        user: userId,
+        text: `❌ ${error.message}`
+      });
+    }
+  });
+
+  // Repository configuration modal submit
+  app.view('repo_config_submit', async ({ ack, body, client, view }) => {
+    await ack();
+    const userId = body.user.id;
+    const slackTeamId = body.team?.id || '';
+    const metadata = JSON.parse(view.private_metadata);
+    const { workspaceId, repoFullName } = metadata;
+
+    try {
+      await requireWorkspaceAdmin(userId, slackTeamId, client);
+      
+      const requiredReviewersStr = view.state.values.required_reviewers?.required_reviewers?.value || '2';
+      const requiredReviewers = parseInt(requiredReviewersStr, 10) || 2;
+      const stackRulesText = view.state.values.stack_rules?.stack_rules?.value || '';
+
+      const { parseStackRules } = await import('./repoConfigModal');
+      const stackRules = parseStackRules(stackRulesText);
+
+      // Get or create repo mapping
+      let repoMapping = await db.getRepoMapping(workspaceId, repoFullName);
+      if (!repoMapping) {
+        // Create new mapping (team will need to be set separately)
+        const mappingId = `repo_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+        repoMapping = {
+          id: mappingId,
+          workspaceId,
+          teamId: '', // Will need to be set via /map-repo
+          repoFullName,
+          requiredReviewers,
+          stackRules,
+          createdAt: Date.now()
+        };
+        await db.addRepoMapping(repoMapping);
+      } else {
+        // Update existing mapping
+        await db.removeRepoMapping(repoMapping.id);
+        await db.addRepoMapping({
+          ...repoMapping,
+          requiredReviewers,
+          stackRules,
+          createdAt: repoMapping.createdAt
+        });
+      }
+
+      await client.chat.postEphemeral({
+        channel: userId,
+        user: userId,
+        text: `✅ Repository configuration saved!\n\n• Required reviewers: ${requiredReviewers}\n• Stack rules: ${stackRules.length} configured\n\nThese settings will be used for PRs in \`${repoFullName}\`.`
+      });
+
+      // Refresh home tab
+      await client.views.publish({
+        user_id: userId,
+        view: { type: 'home', blocks: [] }
+      });
+    } catch (error: any) {
+      logger.error('Error saving repo config', error);
+      await client.chat.postEphemeral({
+        channel: userId,
+        user: userId,
+        text: `❌ Failed to save configuration: ${error.message}`
+      });
+    }
+  });
 }
 

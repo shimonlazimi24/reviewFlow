@@ -129,6 +129,10 @@ export async function buildHomeTabBlocks(
   const usagePercent = Math.round((context.usage.prsProcessed / context.usage.limit) * 100);
   const usageBar = '█'.repeat(Math.min(20, Math.floor(usagePercent / 5))) + '░'.repeat(20 - Math.min(20, Math.floor(usagePercent / 5)));
 
+  // Get workspace for Go Live status
+  const workspace = await db.getWorkspace(workspaceId);
+  const isGoLive = workspace?.goLiveEnabled || false;
+
   // Check if setup is incomplete
   const setupIncomplete = !hasGitHub || memberCount === 0;
 
@@ -138,6 +142,18 @@ export async function buildHomeTabBlocks(
   if (setupIncomplete) {
     const onboardingBlocks = await buildOnboardingChecklist(hasGitHub, hasJira, memberCount, workspaceId);
     blocks.push(...onboardingBlocks);
+    blocks.push({ type: 'divider' });
+  }
+
+  // Show Go Live status for admins
+  if (workspace && context.isAdmin) {
+    blocks.push({
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text: `*🚀 PR Processing Status:* ${isGoLive ? '✅ Live' : '⏸️ Paused'}\n${isGoLive ? 'ReviewFlow is automatically assigning reviewers when PRs are opened.' : 'Enable "Go Live" in the setup wizard to start processing PRs.'}`
+      }
+    });
     blocks.push({ type: 'divider' });
   }
 

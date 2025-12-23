@@ -280,9 +280,24 @@ export class PostgresDb {
         workspace_id VARCHAR(255) NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
         team_id VARCHAR(255) REFERENCES teams(id) ON DELETE SET NULL,
         repo_full_name VARCHAR(255) NOT NULL,
+        required_reviewers INTEGER DEFAULT 2,
+        stack_rules JSONB,
         created_at BIGINT NOT NULL,
         UNIQUE(workspace_id, repo_full_name)
       );
+      
+      -- Migration: Add new columns if they don't exist
+      DO $$ 
+      BEGIN
+        IF NOT EXISTS (
+          SELECT 1 FROM information_schema.columns 
+          WHERE table_name = 'repo_mappings' AND column_name = 'required_reviewers'
+        ) THEN
+          ALTER TABLE repo_mappings ADD COLUMN required_reviewers INTEGER DEFAULT 2;
+          ALTER TABLE repo_mappings ADD COLUMN stack_rules JSONB;
+        END IF;
+      END $$;
+      
       CREATE INDEX IF NOT EXISTS idx_repo_mappings_workspace_id ON repo_mappings(workspace_id);
       CREATE INDEX IF NOT EXISTS idx_repo_mappings_repo_full_name ON repo_mappings(repo_full_name);
 
@@ -761,6 +776,137 @@ export class PostgresDb {
       prMergedTransition: row.pr_merged_transition || undefined,
       createdAt: row.created_at ? new Date(row.created_at).getTime() : Date.now(),
       updatedAt: row.updated_at ? new Date(row.updated_at).getTime() : Date.now()
+    };
+  }
+
+  // Team operations
+  async addTeam(team: any): Promise<void> {
+    await this.pool.query(
+      `INSERT INTO teams (id, workspace_id, name, slack_channel_id, is_active, created_at)
+       VALUES ($1, $2, $3, $4, $5, $6)
+       ON CONFLICT (id) DO UPDATE SET
+         name = EXCLUDED.name,
+         slack_channel_id = EXCLUDED.slack_channel_id,
+         is_active = EXCLUDED.is_active`,
+      [team.id, team.workspaceId, team.name, team.slackChannelId || null, team.isActive !== false, team.createdAt]
+    );
+  }
+
+  async getTeam(id: string): Promise<any | undefined> {
+    const result = await this.pool.query('SELECT * FROM teams WHERE id = $1', [id]);
+    if (result.rows.length === 0) return undefined;
+    return this.rowToTeam(result.rows[0]);
+  }
+
+  async listTeams(workspaceId: string): Promise<any[]> {
+    const result = await this.pool.query(
+      'SELECT * FROM teams WHERE workspace_id = $1 ORDER BY created_at',
+      [workspaceId]
+    );
+    return result.rows.map(row => this.rowToTeam(row));
+  }
+
+  async updateTeam(id: string, updates: Partial<any>): Promise<void> {
+    const fields: string[] = [];
+    const values: any[] = [];
+    let paramCount = 1;
+
+    if (updates.name !== undefined) {
+      fields.push(`name = $${paramCount++}`);
+      values.push(updates.name);
+    }
+    if (updates.slackChannelId !== undefined) {
+      fields.push(`slack_channel_id = $${paramCount++}`);
+      values.push(updates.slackChannelId);
+    }
+    if (updates.isActive !== undefined) {
+      fields.push(`is_active = $${paramCount++}`);
+      values.push(updates.isActive);
+    }
+
+    if (fields.length === 0) return;
+
+    values.push(id);
+    await this.pool.query(
+      `UPDATE teams SET ${fields.join(', ')} WHERE id = $${paramCount}`,
+      values
+    );
+  }
+
+  async removeTeam(id: string): Promise<void> {
+    await this.pool.query('DELETE FROM teams WHERE id = $1', [id]);
+  }
+
+  private rowToTeam(row: any): any {
+    return {
+      id: row.id,
+      workspaceId: row.workspace_id,
+      name: row.name,
+      slackChannelId: row.slack_channel_id || undefined,
+      isActive: row.is_active !== false,
+      createdAt: row.created_at ? new Date(row.created_at).getTime() : Date.now()
+    };
+  }
+
+  // Repo mapping operations
+  async addRepoMapping(mapping: any): Promise<void> {
+    await this.pool.query(
+      `INSERT INTO repo_mappings (id, workspace_id, team_id, repo_full_name, required_reviewers, stack_rules, created_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)
+       ON CONFLICT (workspace_id, repo_full_name) DO UPDATE SET
+         team_id = EXCLUDED.team_id,
+         required_reviewers = EXCLUDED.required_reviewers,
+         stack_rules = EXCLUDED.stack_rules`,
+      [
+        mapping.id,
+        mapping.workspaceId,
+        mapping.teamId || null,
+        mapping.repoFullName,
+        mapping.requiredReviewers || 2,
+        mapping.stackRules ? JSON.stringify(mapping.stackRules) : null,
+        mapping.createdAt
+      ]
+    );
+  }
+
+  async getRepoMapping(workspaceId: string, repoFullName: string): Promise<any | undefined> {
+    const result = await this.pool.query(
+      'SELECT * FROM repo_mappings WHERE workspace_id = $1 AND repo_full_name = $2',
+      [workspaceId, repoFullName]
+    );
+    if (result.rows.length === 0) return undefined;
+    return this.rowToRepoMapping(result.rows[0]);
+  }
+
+  async listRepoMappings(workspaceId: string, teamId?: string): Promise<any[]> {
+    let result: QueryResult;
+    if (teamId) {
+      result = await this.pool.query(
+        'SELECT * FROM repo_mappings WHERE workspace_id = $1 AND team_id = $2 ORDER BY created_at',
+        [workspaceId, teamId]
+      );
+    } else {
+      result = await this.pool.query(
+        'SELECT * FROM repo_mappings WHERE workspace_id = $1 ORDER BY created_at',
+        [workspaceId]
+      );
+    }
+    return result.rows.map(row => this.rowToRepoMapping(row));
+  }
+
+  async removeRepoMapping(id: string): Promise<void> {
+    await this.pool.query('DELETE FROM repo_mappings WHERE id = $1', [id]);
+  }
+
+  private rowToRepoMapping(row: any): any {
+    return {
+      id: row.id,
+      workspaceId: row.workspace_id,
+      teamId: row.team_id || undefined,
+      repoFullName: row.repo_full_name,
+      requiredReviewers: row.required_reviewers || 2,
+      stackRules: row.stack_rules ? JSON.parse(row.stack_rules) : undefined,
+      createdAt: row.created_at ? new Date(row.created_at).getTime() : Date.now()
     };
   }
 
