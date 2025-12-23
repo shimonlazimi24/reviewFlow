@@ -701,75 +701,115 @@ export function registerSimpleHomeHandlers(app: App) {
       }
 
       logger.info('Creating billing checkout/portal', { workspaceId: workspace.id, plan: workspace.plan });
+      
+      // Check if Polar is configured
+      const { env } = await import('../config/env');
+      if (!env.POLAR_ACCESS_TOKEN || (!env.POLAR_PRO_PRODUCT_ID && !env.POLAR_PRO_PRICE_ID)) {
+        logger.warn('Polar billing not configured');
+        await client.chat.postEphemeral({
+          channel: userId,
+          user: userId,
+          text: '💳 *Billing Not Configured*\n\nPolar billing is not set up yet. To enable billing:\n\n1. Set up Polar.sh account\n2. Configure `POLAR_ACCESS_TOKEN` and `POLAR_PRO_PRODUCT_ID`\n3. See `POLAR_SETUP.md` for details\n\nFor now, all features are available in free mode.'
+        });
+        return;
+      }
+
       const { PolarService } = await import('../services/polarService');
       const polar = new PolarService();
 
       if (workspace.plan === 'free' || !workspace.polarCustomerId) {
         // Create upgrade checkout
-        const checkout = await polar.createCheckoutSession({
-          slackTeamId: teamId,
-          slackUserId: userId,
-          plan: 'pro'
-        });
+        try {
+          const checkout = await polar.createCheckoutSession({
+            slackTeamId: teamId,
+            slackUserId: userId,
+            plan: 'pro'
+          });
 
-        await client.chat.postEphemeral({
-          channel: userId,
-          user: userId,
-          text: '🚀 *Upgrade to ReviewFlow Pro*\n\nUnlock all features:\n• Unlimited teams, members, and repos\n• Jira Integration\n• Auto Balance\n• Reminders\n• Advanced Analytics',
-          blocks: [
-            {
-              type: 'actions',
-              elements: [
-                {
-                  type: 'button',
-                  text: {
-                    type: 'plain_text',
-                    text: '🚀 Upgrade to Pro'
-                  },
-                  style: 'primary',
-                  url: checkout.url,
-                  action_id: 'upgrade_to_pro'
-                }
-              ]
-            }
-          ]
-        });
+          await client.chat.postEphemeral({
+            channel: userId,
+            user: userId,
+            text: '🚀 *Upgrade to ReviewFlow Pro*\n\nUnlock all features:\n• Unlimited teams, members, and repos\n• Jira Integration\n• Auto Balance\n• Reminders\n• Advanced Analytics',
+            blocks: [
+              {
+                type: 'actions',
+                elements: [
+                  {
+                    type: 'button',
+                    text: {
+                      type: 'plain_text',
+                      text: '🚀 Upgrade to Pro'
+                    },
+                    style: 'primary',
+                    url: checkout.url,
+                    action_id: 'upgrade_to_pro'
+                  }
+                ]
+              }
+            ]
+          });
+        } catch (error: any) {
+          logger.error('Failed to create checkout session', error);
+          await client.chat.postEphemeral({
+            channel: userId,
+            user: userId,
+            text: `❌ Failed to create upgrade link: ${error.message || 'Unknown error'}\n\nPlease check your Polar configuration or use \`/upgrade\` command.`
+          });
+        }
       } else {
         // Create customer portal
-        const portal = await polar.createCustomerPortalSession(
-          workspace.polarCustomerId,
-          `${process.env.APP_BASE_URL || 'http://localhost:3000'}/billing/success?workspace_id=${workspace.id}`
-        );
+        try {
+          const portal = await polar.createCustomerPortalSession(
+            workspace.polarCustomerId,
+            `${process.env.APP_BASE_URL || 'http://localhost:3000'}/billing/success?workspace_id=${workspace.id}`
+          );
 
+          await client.chat.postEphemeral({
+            channel: userId,
+            user: userId,
+            text: '💳 *Manage Your Subscription*\n\nUpdate payment method, view invoices, or cancel subscription.',
+            blocks: [
+              {
+                type: 'actions',
+                elements: [
+                  {
+                    type: 'button',
+                    text: {
+                      type: 'plain_text',
+                      text: '💳 Manage Billing'
+                    },
+                    url: portal.url,
+                    action_id: 'manage_billing'
+                  }
+                ]
+              }
+            ]
+          });
+        } catch (error: any) {
+          logger.error('Failed to create customer portal', error);
+          await client.chat.postEphemeral({
+            channel: userId,
+            user: userId,
+            text: `❌ Failed to open billing portal: ${error.message || 'Unknown error'}\n\nPlease try using \`/billing\` command.`
+          });
+        }
+      }
+    } catch (error: any) {
+      logger.error('Error handling billing action', error, {
+        teamId,
+        userId,
+        errorMessage: error.message,
+        errorStack: error.stack
+      });
+      try {
         await client.chat.postEphemeral({
           channel: userId,
           user: userId,
-          text: '💳 *Manage Your Subscription*\n\nUpdate payment method, view invoices, or cancel subscription.',
-          blocks: [
-            {
-              type: 'actions',
-              elements: [
-                {
-                  type: 'button',
-                  text: {
-                    type: 'plain_text',
-                    text: '💳 Manage Billing'
-                  },
-                  url: portal.url,
-                  action_id: 'manage_billing'
-                }
-              ]
-            }
-          ]
+          text: `❌ Failed to open billing: ${error.message || 'Unknown error'}\n\nPlease try using \`/upgrade\` or \`/billing\` command.`
         });
+      } catch (err: any) {
+        logger.error('Failed to send error message to user', err);
       }
-    } catch (error: any) {
-      logger.error('Error handling billing action', error);
-      await client.chat.postEphemeral({
-        channel: userId,
-        user: userId,
-        text: `❌ Failed to open billing: ${error.message}`
-      });
     }
   });
 

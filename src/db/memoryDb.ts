@@ -215,6 +215,11 @@ export interface IDatabase {
   markAssignmentDoneBySlackUser(prId: string, slackUserId: string): Promise<boolean>;
   getAssignmentsBySlackUser(slackUserId: string): Promise<Assignment[]>;
   updateAssignmentStatus(assignmentId: string, status: AssignmentStatus): Promise<boolean>;
+  
+  // Jira Connection operations
+  getJiraConnection(workspaceId: string): Promise<JiraConnection | undefined>;
+  upsertJiraConnection(connection: any): Promise<void>;
+  deleteJiraConnection(workspaceId: string): Promise<void>;
 }
 
 class MemoryDb implements IDatabase {
@@ -651,6 +656,30 @@ class MemoryDb implements IDatabase {
 
   async deleteSlackInstallation(teamId: string): Promise<void> {
     this.slackInstallations.delete(teamId);
+  }
+
+  // Jira Connection operations
+  async getJiraConnection(workspaceId: string): Promise<JiraConnection | undefined> {
+    return this.jiraConnections.get(workspaceId);
+  }
+
+  async upsertJiraConnection(connection: any): Promise<void> {
+    this.jiraConnections.set(connection.workspaceId, {
+      id: connection.id,
+      workspaceId: connection.workspaceId,
+      baseUrl: connection.baseUrl,
+      email: connection.email,
+      authType: connection.authType || 'basic',
+      tokenEncrypted: connection.tokenEncrypted,
+      prOpenedTransition: connection.prOpenedTransition,
+      prMergedTransition: connection.prMergedTransition,
+      createdAt: connection.createdAt || Date.now(),
+      updatedAt: connection.updatedAt || Date.now()
+    });
+  }
+
+  async deleteJiraConnection(workspaceId: string): Promise<void> {
+    this.jiraConnections.delete(workspaceId);
   }
 }
 
