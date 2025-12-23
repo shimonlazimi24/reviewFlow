@@ -321,8 +321,35 @@ async function main() {
           // Polar may send signature in different header formats - check both
           const signature = (req.headers['polar-signature'] || 
                             req.headers['x-polar-signature'] || 
-                            req.headers['signature']) as string;
-          const rawBody = req.body.toString();
+                            req.headers['signature'] ||
+                            req.headers['webhook-signature']) as string;
+          
+          // Handle body - it might be a Buffer (from raw middleware) or already parsed
+          let rawBody: string;
+          let event: any;
+          
+          if (Buffer.isBuffer(req.body)) {
+            // Body is a Buffer (from express.raw middleware)
+            rawBody = req.body.toString('utf8');
+            event = JSON.parse(rawBody);
+          } else if (typeof req.body === 'string') {
+            // Body is already a string
+            rawBody = req.body;
+            event = JSON.parse(rawBody);
+          } else if (typeof req.body === 'object' && req.body !== null) {
+            // Body is already parsed as JSON (shouldn't happen with raw middleware, but handle it)
+            rawBody = JSON.stringify(req.body);
+            event = req.body;
+            logger.warn('Polar webhook body already parsed as object - using as-is', {
+              hasType: !!event.type
+            });
+          } else {
+            logger.error('Unexpected Polar webhook body type', { 
+              bodyType: typeof req.body,
+              bodyValue: String(req.body).substring(0, 100)
+            });
+            return res.status(400).json({ error: 'Invalid request body' });
+          }
 
           if (!signature) {
             // Log available headers for debugging
@@ -330,7 +357,8 @@ async function main() {
               'polar-signature': req.headers['polar-signature'],
               'x-polar-signature': req.headers['x-polar-signature'],
               'signature': req.headers['signature'],
-              'x-signature': req.headers['x-signature']
+              'x-signature': req.headers['x-signature'],
+              'webhook-signature': req.headers['webhook-signature']
             };
             
             logger.warn('Polar webhook received without signature', {
@@ -348,13 +376,11 @@ async function main() {
             }
           }
 
-          // Only verify signature if it was provided
-          if (signature && !polarService.verifyWebhookSignature(rawBody, signature)) {
+          // Only verify signature if it was provided and we have rawBody
+          if (signature && rawBody && !polarService.verifyWebhookSignature(rawBody, signature)) {
             logger.warn('Invalid Polar webhook signature');
             return res.status(400).json({ error: 'Invalid signature' });
           }
-
-          const event = JSON.parse(rawBody);
           logger.info('Polar webhook received', { type: event.type });
 
           const result = await polarService.handleWebhookEvent(event);
