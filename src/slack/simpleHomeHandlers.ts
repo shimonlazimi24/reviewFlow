@@ -13,6 +13,7 @@ import {
  * Register simplified home tab and setup handlers
  */
 export function registerSimpleHomeHandlers(app: App) {
+
   // Handle app_home_opened event
   app.event('app_home_opened', async ({ event, client }) => {
     const userId = event.user;
