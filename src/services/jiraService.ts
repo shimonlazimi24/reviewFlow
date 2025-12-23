@@ -1,6 +1,9 @@
+// Jira integration service - workspace-scoped
 import axios, { AxiosInstance, AxiosError } from 'axios';
-import { env } from '../config/env';
 import { logger } from '../utils/logger';
+import { AppError } from '../utils/errors';
+import { decrypt } from '../utils/encryption';
+import { JiraConnection } from '../db/memoryDb';
 
 export interface JiraIssueMinimal {
   key: string;
@@ -13,10 +16,22 @@ export interface JiraIssueMinimal {
 export class JiraService {
   private client: AxiosInstance;
   private baseUrl: string;
+  private workspaceId: string;
 
-  constructor() {
-    this.baseUrl = env.JIRA_BASE_URL;
-    const auth = Buffer.from(`${env.JIRA_EMAIL}:${env.JIRA_API_TOKEN}`).toString('base64');
+  constructor(connection: JiraConnection) {
+    this.workspaceId = connection.workspaceId;
+    this.baseUrl = connection.baseUrl;
+    
+    // Decrypt token
+    let apiToken: string;
+    try {
+      apiToken = decrypt(connection.tokenEncrypted);
+    } catch (error) {
+      logger.error('Failed to decrypt Jira token', error);
+      throw new AppError('Failed to decrypt Jira credentials', 500);
+    }
+    
+    const auth = Buffer.from(`${connection.email}:${apiToken}`).toString('base64');
 
     this.client = axios.create({
       baseURL: this.baseUrl,
@@ -28,6 +43,10 @@ export class JiraService {
     });
   }
 
+  getWorkspaceId(): string {
+    return this.workspaceId;
+  }
+
   async getIssueMinimal(issueKey: string): Promise<JiraIssueMinimal> {
     try {
       const response = await this.client.get(`/rest/api/3/issue/${issueKey}`, {
@@ -35,7 +54,7 @@ export class JiraService {
           fields: 'summary,status,assignee'
         }
       }).catch(async (error: AxiosError) => {
-        // Handle rate limiting
+        // Handle rate limiting with retry
         if (error.response?.status === 429) {
           const retryAfter = error.response.headers['retry-after'] || '60';
           logger.warn('Jira rate limit hit, retrying after delay', { retryAfter, issueKey });
@@ -49,7 +68,7 @@ export class JiraService {
         throw error;
       });
 
-      const issue = response.data;
+      const issue = (await response).data;
       return {
         key: issue.key,
         summary: issue.fields?.summary || 'No summary',
@@ -58,7 +77,19 @@ export class JiraService {
         url: `${this.baseUrl}/browse/${issue.key}`
       };
     } catch (error: any) {
-      throw new Error(`Failed to fetch Jira issue ${issueKey}: ${error.message}`);
+      // Graceful degradation - don't block the flow
+      if (error.response?.status === 429 || error.response?.status === 503) {
+        logger.warn(`Jira rate limit or service unavailable for ${issueKey}`, error);
+        // Return minimal info instead of throwing
+        return {
+          key: issueKey,
+          summary: 'Unable to fetch (rate limited)',
+          status: 'Unknown',
+          url: `${this.baseUrl}/browse/${issueKey}`
+        };
+      }
+      logger.error(`Failed to fetch Jira issue ${issueKey}`, error);
+      throw new AppError(`Failed to fetch Jira issue ${issueKey}: ${error.message}`, error.response?.status || 500);
     }
   }
 
@@ -89,7 +120,8 @@ export class JiraService {
           body: comment
         });
       } catch (fallbackError: any) {
-        throw new Error(`Failed to add comment to ${issueKey}: ${error.message || fallbackError.message}`);
+        logger.error(`Failed to add comment to ${issueKey}`, error || fallbackError);
+        throw new AppError(`Failed to add comment to ${issueKey}: ${error.message || fallbackError.message}`, error.response?.status || 500);
       }
     }
   }
@@ -107,7 +139,7 @@ export class JiraService {
       );
 
       if (!transition) {
-        throw new Error(`Transition "${transitionName}" not found for issue ${issueKey}`);
+        throw new AppError(`Transition "${transitionName}" not found for issue ${issueKey}`, 404);
       }
 
       await this.client.post(`/rest/api/3/issue/${issueKey}/transitions`, {
@@ -116,7 +148,8 @@ export class JiraService {
         }
       });
     } catch (error: any) {
-      throw new Error(`Failed to transition ${issueKey} to "${transitionName}": ${error.message}`);
+      logger.error(`Failed to transition ${issueKey} to "${transitionName}"`, error);
+      throw new AppError(`Failed to transition ${issueKey} to "${transitionName}": ${error.message}`, error.response?.status || 500);
     }
   }
 
@@ -143,7 +176,7 @@ export class JiraService {
       );
 
       if (!issueTypeObj) {
-        throw new Error(`Issue type "${issueType}" not found in project ${projectKey}`);
+        throw new AppError(`Issue type "${issueType}" not found in project ${projectKey}`, 404);
       }
 
       // Build fields object
@@ -181,7 +214,8 @@ export class JiraService {
 
       // Add to sprint if sprintId is provided
       if (sprintId) {
-        const sprintField = env.JIRA_DEFAULT_SPRINT_FIELD;
+        // Use default sprint field (can be configured per workspace)
+        const sprintField = process.env.JIRA_DEFAULT_SPRINT_FIELD || 'customfield_10020';
         fields[sprintField] = sprintId;
       }
 
@@ -194,7 +228,8 @@ export class JiraService {
       // Fetch the created issue to return full details
       return await this.getIssueMinimal(issueKey);
     } catch (error: any) {
-      throw new Error(`Failed to create Jira issue: ${error.message}`);
+      logger.error('Failed to create Jira issue', error);
+      throw new AppError(`Failed to create Jira issue: ${error.message}`, error.response?.status || 500);
     }
   }
 
@@ -225,30 +260,29 @@ export class JiraService {
 
       return [];
     } catch (error: any) {
-      console.warn('Failed to fetch active sprints:', error.message);
+      logger.warn('Failed to fetch active sprints', error);
       return [];
     }
   }
 
   async addIssueToSprint(issueKey: string, sprintId: number): Promise<void> {
     try {
-      const sprintField = env.JIRA_DEFAULT_SPRINT_FIELD;
-      
+      const sprintField = process.env.JIRA_DEFAULT_SPRINT_FIELD || 'customfield_10020';
+
       await this.client.put(`/rest/api/3/issue/${issueKey}`, {
         fields: {
           [sprintField]: sprintId
         }
       });
     } catch (error: any) {
-      // Try alternative method using Agile API
       try {
         await this.client.post(`/rest/agile/1.0/sprint/${sprintId}/issue`, {
           issues: [issueKey]
         });
       } catch (agileError: any) {
-        throw new Error(`Failed to add issue ${issueKey} to sprint: ${error.message || agileError.message}`);
+        logger.error(`Failed to add issue ${issueKey} to sprint`, error || agileError);
+        throw new AppError(`Failed to add issue ${issueKey} to sprint: ${error.message || agileError.message}`, error.response?.status || 500);
       }
     }
   }
 }
-

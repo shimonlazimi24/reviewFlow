@@ -5,6 +5,7 @@ import { loadWorkspaceContext } from '../services/workspaceContext';
 import { SubscriptionPlan } from '../types/subscription';
 import { PolarService } from '../services/polarService';
 import { logger } from '../utils/logger';
+import { buildOnboardingChecklist } from './onboarding';
 
 export function registerHomeTab(app: App) {
   app.event('app_home_opened', async ({ event, client }) => {
@@ -19,20 +20,34 @@ export function registerHomeTab(app: App) {
 
       // Load workspace context
       const context = await loadWorkspaceContext(teamId);
+      const workspace = await db.getWorkspaceBySlackTeamId(teamId);
+      if (!workspace) {
+        logger.warn('Workspace not found for team', { teamId });
+        return;
+      }
 
-      // Get current open PRs
-      const openPRs = await db.listOpenPrs();
-      const workspacePRs = openPRs.filter((pr: any) => {
-        // Filter by workspace if needed
-        return true; // For now, show all
-      });
+      // Get current open PRs (workspace-scoped)
+      const openPRs = await db.listOpenPrs(workspace.id);
+      const workspacePRs = openPRs.filter((pr: any) => pr.status === 'OPEN');
 
-      // Get team members
-      const members = await db.listMembers();
+      // Get team members (workspace-scoped)
+      const members = await db.listMembers(workspace.id);
       const activeMembers = members.filter((m: any) => m.isActive && !m.isUnavailable);
 
+      // Check connections
+      const hasGitHub = !!workspace.githubInstallationId;
+      const jiraConnection = await db.getJiraConnection(workspace.id);
+      const hasJira = !!jiraConnection;
+
       // Build home tab view
-      const blocks = await buildHomeTabBlocks(context, workspacePRs.length, activeMembers.length);
+      const blocks = await buildHomeTabBlocks(
+        context, 
+        workspacePRs.length, 
+        activeMembers.length,
+        hasGitHub,
+        hasJira,
+        workspace.id
+      );
 
       await client.views.publish({
         user_id: userId,
@@ -49,19 +64,38 @@ export function registerHomeTab(app: App) {
   });
 }
 
-async function buildHomeTabBlocks(context: any, openPRCount: number, memberCount: number): Promise<any[]> {
+export async function buildHomeTabBlocks(
+  context: any, 
+  openPRCount: number, 
+  memberCount: number,
+  hasGitHub: boolean,
+  hasJira: boolean,
+  workspaceId: string
+): Promise<any[]> {
   const planEmoji = getPlanEmoji(context.plan);
   const usagePercent = Math.round((context.usage.prsProcessed / context.usage.limit) * 100);
   const usageBar = '█'.repeat(Math.min(20, Math.floor(usagePercent / 5))) + '░'.repeat(20 - Math.min(20, Math.floor(usagePercent / 5)));
 
-  const blocks: any[] = [
+  // Check if setup is incomplete
+  const setupIncomplete = !hasGitHub || memberCount === 0;
+
+  const blocks: any[] = [];
+
+  // Show onboarding checklist if setup is incomplete
+  if (setupIncomplete) {
+    const onboardingBlocks = await buildOnboardingChecklist(hasGitHub, hasJira, memberCount, workspaceId);
+    blocks.push(...onboardingBlocks);
+    blocks.push({ type: 'divider' });
+  }
+
+  blocks.push(
     {
       type: 'header',
       text: {
         type: 'plain_text',
         text: `${planEmoji} ReviewFlow Dashboard`
       }
-    },
+    } as any,
     {
       type: 'section',
       fields: [
@@ -128,8 +162,8 @@ async function buildHomeTabBlocks(context: any, openPRCount: number, memberCount
           text: `Advanced Analytics: ${context.limits.advancedAnalytics ? '✅' : '❌'}`
         }
       ]
-    }
-  ];
+    } as any
+  );
 
   // Add upgrade CTA if on free plan
   if (context.plan === SubscriptionPlan.FREE) {

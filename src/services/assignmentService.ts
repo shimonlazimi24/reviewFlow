@@ -16,14 +16,15 @@ export function inferStackFromLabels(labels: GitHubLabel[] | any[]): Stack {
 }
 
 export async function pickReviewers(args: {
+  workspaceId: string;
   stack: Stack;
   requiredReviewers: number;
   authorGithub: string;
   excludeMemberIds?: string[]; // Optional: exclude specific members (e.g., for reassignment)
   teamId?: string; // Optional: filter by team
 }): Promise<Member[]> {
-  const { stack, requiredReviewers, authorGithub, excludeMemberIds = [], teamId } = args;
-  const members = await db.listMembers(teamId);
+  const { workspaceId, stack, requiredReviewers, authorGithub, excludeMemberIds = [], teamId } = args;
+  const members = await db.listMembers(workspaceId, teamId);
 
   const candidates = await Promise.all(
     members

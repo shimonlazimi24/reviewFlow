@@ -1,5 +1,5 @@
 import { App, BlockAction, ButtonAction, SlashCommand } from '@slack/bolt';
-import { db, Member, Role, PrRecord, Assignment } from '../db/memoryDb';
+import { db, Member, Role, PrRecord, Assignment, Team, RepoMapping } from '../db/memoryDb';
 import { buildPrMessageBlocks } from './blocks';
 import { JiraService } from '../services/jiraService';
 import { env, jiraEnabled } from '../config/env';
@@ -13,6 +13,8 @@ import { logger } from '../utils/logger';
 import { AnalyticsService } from '../services/analyticsService';
 import { loadWorkspaceContext, hasFeature } from '../services/workspaceContext';
 import { PolarService } from '../services/polarService';
+import { buildGitHubConnectModal, buildJiraConnectModal, buildBulkMemberImportModal } from './onboarding';
+import { encrypt } from '../utils/encryption';
 
 export function registerSlackHandlers(app: App) {
   // Register team management handlers
@@ -100,12 +102,23 @@ export function registerSlackHandlers(app: App) {
           const reviewers = reviewerResults.filter((m): m is NonNullable<typeof m> => m !== undefined);
 
           let jiraInfo = undefined;
-          if (pr.jiraIssueKey && jiraEnabled) {
+          if (pr.jiraIssueKey) {
             try {
-              const jira = new JiraService();
-              jiraInfo = await jira.getIssueMinimal(pr.jiraIssueKey);
+              const actionBody = body as BlockAction<ButtonAction>;
+              const slackTeamId = actionBody.team?.id;
+              if (slackTeamId) {
+                const workspace = await db.getWorkspaceBySlackTeamId(slackTeamId);
+                if (workspace) {
+                  const context = await loadWorkspaceContext(slackTeamId);
+                  const jiraConnection = await db.getJiraConnection(workspace.id);
+                  if (jiraConnection && hasFeature(context, 'jiraIntegration')) {
+                    const jira = new JiraService(jiraConnection);
+                    jiraInfo = await jira.getIssueMinimal(pr.jiraIssueKey);
+                  }
+                }
+              }
             } catch (e) {
-              console.warn('Failed to fetch Jira info for take review:', e);
+              logger.warn('Failed to fetch Jira info for take review', e);
             }
           }
 
@@ -351,6 +364,35 @@ export function registerSlackHandlers(app: App) {
         return;
       }
 
+      const slackTeamId = actionBody.team?.id;
+      if (!slackTeamId) {
+        await client.chat.postEphemeral({
+          channel: channelId,
+          user: userId,
+          text: '❌ Missing Slack Team ID'
+        });
+        return;
+      }
+      const workspace = await db.getWorkspaceBySlackTeamId(slackTeamId);
+      if (!workspace) {
+        await client.chat.postEphemeral({
+          channel: channelId,
+          user: userId,
+          text: '❌ Workspace not found'
+        });
+        return;
+      }
+      const context = await loadWorkspaceContext(slackTeamId);
+      const jiraConnection = await db.getJiraConnection(workspace.id);
+      if (!jiraConnection || !hasFeature(context, 'jiraIntegration')) {
+        await client.chat.postEphemeral({
+          channel: channelId,
+          user: userId,
+          text: '❌ Jira is not configured for this workspace.'
+        });
+        return;
+      }
+
       // Show "Creating..." message
       await client.chat.postEphemeral({
         channel: channelId,
@@ -358,7 +400,7 @@ export function registerSlackHandlers(app: App) {
         text: '🔄 Creating Jira ticket...'
       });
 
-      const jira = new JiraService();
+      const jira = new JiraService(jiraConnection);
 
       // Get active sprint if available
       const sprints = await jira.getActiveSprints(env.JIRA_PROJECT_KEY);
@@ -462,7 +504,32 @@ export function registerSlackHandlers(app: App) {
         response_type: 'ephemeral'
       });
 
-      const jira = new JiraService();
+      const slackTeamId = command.team_id;
+      if (!slackTeamId) {
+        await respond({
+          text: '❌ Missing Slack Team ID',
+          response_type: 'ephemeral'
+        });
+        return;
+      }
+      const workspace = await db.getWorkspaceBySlackTeamId(slackTeamId);
+      if (!workspace) {
+        await respond({
+          text: '❌ Workspace not found',
+          response_type: 'ephemeral'
+        });
+        return;
+      }
+      const context = await loadWorkspaceContext(slackTeamId);
+      const jiraConnection = await db.getJiraConnection(workspace.id);
+      if (!jiraConnection || !hasFeature(context, 'jiraIntegration')) {
+        await respond({
+          text: '❌ Jira is not configured for this workspace.',
+          response_type: 'ephemeral'
+        });
+        return;
+      }
+      const jira = new JiraService(jiraConnection);
 
       // Get active sprint if available
       const sprints = await jira.getActiveSprints(env.JIRA_PROJECT_KEY);
@@ -793,7 +860,18 @@ export function registerSlackHandlers(app: App) {
 
       // Find new reviewer (excluding current one and unavailable members)
       const currentMember = await db.getMember(currentAssignment.memberId);
+      const slackTeamId = command.team_id;
+      if (!slackTeamId) {
+        await sendResponse(client, channelId, userId, '❌ Missing Slack Team ID', respond);
+        return;
+      }
+      const workspace = await db.getWorkspaceBySlackTeamId(slackTeamId);
+      if (!workspace) {
+        await sendResponse(client, channelId, userId, '❌ Workspace not found', respond);
+        return;
+      }
       const newReviewers = await pickReviewers({
+        workspaceId: workspace.id,
         stack: pr.stack === 'MIXED' ? 'MIXED' : pr.stack,
         requiredReviewers: 2, // Get 2 candidates in case first is current reviewer
         authorGithub: pr.authorGithub,
@@ -826,12 +904,22 @@ export function registerSlackHandlers(app: App) {
         const reviewers = reviewerResults.filter((m): m is NonNullable<typeof m> => m !== undefined);
 
         let jiraInfo = undefined;
-        if (pr.jiraIssueKey && jiraEnabled) {
+        if (pr.jiraIssueKey) {
           try {
-            const jira = new JiraService();
-            jiraInfo = await jira.getIssueMinimal(pr.jiraIssueKey);
+            const slackTeamId = command.team_id;
+            if (slackTeamId) {
+              const workspace = await db.getWorkspaceBySlackTeamId(slackTeamId);
+              if (workspace) {
+                const context = await loadWorkspaceContext(slackTeamId);
+                const jiraConnection = await db.getJiraConnection(workspace.id);
+                if (jiraConnection && hasFeature(context, 'jiraIntegration')) {
+                  const jira = new JiraService(jiraConnection);
+                  jiraInfo = await jira.getIssueMinimal(pr.jiraIssueKey);
+                }
+              }
+            }
           } catch (e) {
-            console.warn('Failed to fetch Jira info for reassign:', e);
+            logger.warn('Failed to fetch Jira info for reassign', e);
           }
         }
 
@@ -845,7 +933,7 @@ export function registerSlackHandlers(app: App) {
             blocks
           });
         } catch (updateError) {
-          console.warn('Failed to update Slack message on reassign:', updateError);
+          logger.warn('Failed to update Slack message on reassign', updateError);
         }
       }
 
@@ -856,7 +944,7 @@ export function registerSlackHandlers(app: App) {
           text: `📋 *PR Reassigned to You*\n\nPR #${pr.number}: ${pr.title}\nRepository: ${pr.repoFullName}\nAuthor: ${pr.authorGithub}\n\n<${pr.url}|View PR on GitHub>`
         });
       } catch (dmError) {
-        console.warn(`Failed to send DM to new reviewer ${newReviewer.slackUserId}:`, dmError);
+        logger.warn(`Failed to send DM to new reviewer ${newReviewer.slackUserId}`, dmError);
       }
 
       await sendResponse(client, channelId, userId, `✅ PR reassigned from <@${currentMember?.slackUserId}> to <@${newReviewer.slackUserId}>.`, respond);
@@ -903,7 +991,18 @@ export function registerSlackHandlers(app: App) {
       }
 
       // Find new reviewer (excluding current one)
+      const slackTeamId = actionBody.team?.id;
+      if (!slackTeamId) {
+        await sendResponse(client, channelId, userId, '❌ Missing Slack Team ID', respond);
+        return;
+      }
+      const workspace = await db.getWorkspaceBySlackTeamId(slackTeamId);
+      if (!workspace) {
+        await sendResponse(client, channelId, userId, '❌ Workspace not found', respond);
+        return;
+      }
       const newReviewers = await pickReviewers({
+        workspaceId: workspace.id,
         stack: pr.stack === 'MIXED' ? 'MIXED' : pr.stack,
         requiredReviewers: 2, // Get 2 candidates in case first is current reviewer
         authorGithub: pr.authorGithub,
@@ -936,12 +1035,21 @@ export function registerSlackHandlers(app: App) {
         const reviewers = reviewerResults.filter((m): m is NonNullable<typeof m> => m !== undefined);
 
         let jiraInfo = undefined;
-        if (pr.jiraIssueKey && jiraEnabled) {
+        if (pr.jiraIssueKey) {
           try {
-            const jira = new JiraService();
-            jiraInfo = await jira.getIssueMinimal(pr.jiraIssueKey);
+            if (slackTeamId) {
+              const workspace = await db.getWorkspaceBySlackTeamId(slackTeamId);
+              if (workspace) {
+                const context = await loadWorkspaceContext(slackTeamId);
+                const jiraConnection = await db.getJiraConnection(workspace.id);
+                if (jiraConnection && hasFeature(context, 'jiraIntegration')) {
+                  const jira = new JiraService(jiraConnection);
+                  jiraInfo = await jira.getIssueMinimal(pr.jiraIssueKey);
+                }
+              }
+            }
           } catch (e) {
-            console.warn('Failed to fetch Jira info for reassign:', e);
+            logger.warn('Failed to fetch Jira info for reassign', e);
           }
         }
 
@@ -955,7 +1063,7 @@ export function registerSlackHandlers(app: App) {
             blocks
           });
         } catch (updateError) {
-          console.warn('Failed to update Slack message on reassign:', updateError);
+          logger.warn('Failed to update Slack message on reassign', updateError);
         }
       }
 
@@ -966,7 +1074,7 @@ export function registerSlackHandlers(app: App) {
           text: `📋 *PR Reassigned to You*\n\nPR #${pr.number}: ${pr.title}\nRepository: ${pr.repoFullName}\nAuthor: ${pr.authorGithub}\n\n<${pr.url}|View PR on GitHub>`
         });
       } catch (dmError) {
-        console.warn(`Failed to send DM to new reviewer ${newReviewer.slackUserId}:`, dmError);
+        logger.warn(`Failed to send DM to new reviewer ${newReviewer.slackUserId}`, dmError);
       }
 
       await sendResponse(client, channelId, userId, `✅ PR reassigned to <@${newReviewer.slackUserId}>.`, respond);
@@ -979,7 +1087,7 @@ export function registerSlackHandlers(app: App) {
     }
   });
 
-  // Enhanced /cr command (my reviews and team queue)
+  // Enhanced /cr command (my reviews, team queue, settings)
   app.command('/cr', async ({ ack, command, client, respond }) => {
     await ack();
     const userId = command.user_id;
@@ -987,7 +1095,34 @@ export function registerSlackHandlers(app: App) {
     const args = command.text?.trim().toLowerCase() || '';
 
     // Route to appropriate handler
-    if (args === 'my' || args === '') {
+    if (args === 'settings') {
+      // Settings modal (admin only)
+      try {
+        await requireAdmin(userId, command.team_id);
+        
+        const workspace = await db.getWorkspaceBySlackTeamId(command.team_id);
+        if (!workspace) {
+          await sendResponse(client, channelId, userId, '❌ Workspace not found.', respond);
+          return;
+        }
+
+        const { buildComprehensiveSettingsModal } = await import('./settingsModal');
+        const modal = await buildComprehensiveSettingsModal(command.team_id, workspace.id);
+
+        await client.views.open({
+          trigger_id: (command as any).trigger_id,
+          view: modal
+        });
+      } catch (error: any) {
+        if (error.message?.includes('admin')) {
+          await sendResponse(client, channelId, userId, '❌ This command requires admin permissions.', respond);
+        } else {
+          logger.error('Error opening settings modal', error);
+          await sendResponse(client, channelId, userId, `❌ Failed to open settings: ${error.message}`, respond);
+        }
+      }
+      return;
+    } else if (args === 'my' || args === '') {
       // Your reviews
       try {
         const assignments = await db.getAssignmentsBySlackUser(userId);
@@ -1134,7 +1269,7 @@ export function registerSlackHandlers(app: App) {
         client,
         channelId,
         userId,
-        'Usage: `/cr my` - Your reviews\n`/cr team` - Team review queue',
+        'Usage: `/cr my` - Your reviews\n`/cr team` - Team review queue\n`/cr settings` - Workspace settings (admin only)',
         respond
       );
     }
@@ -1240,6 +1375,202 @@ export function registerSlackHandlers(app: App) {
       logger.error('Error in /reviewflow command', error);
       await sendResponse(client, channelId, userId, `❌ Failed to get status: ${(error as Error).message}`, respond);
     }
+  });
+
+  // Settings modal action handlers
+  app.action('settings_connect_github', async ({ ack, body, client }: any) => {
+    await ack();
+    try {
+      const actionBody = body as any;
+      const workspaceId = actionBody.actions?.[0]?.value;
+      const { buildGitHubConnectModal } = await import('./onboarding');
+      const modal = buildGitHubConnectModal();
+      await client.views.open({
+        trigger_id: actionBody.trigger_id,
+        view: modal
+      });
+    } catch (error: any) {
+      logger.error('Error opening GitHub connect from settings', error);
+    }
+  });
+
+  app.action('settings_manage_github', async ({ ack, body, client }: any) => {
+    await ack();
+    try {
+      const actionBody = body as any;
+      const userId = actionBody.user?.id;
+      const slackTeamId = actionBody.team?.id;
+      const workspace = await db.getWorkspaceBySlackTeamId(slackTeamId);
+      if (workspace?.githubInstallationId) {
+        await client.chat.postEphemeral({
+          channel: userId,
+          user: userId,
+          text: `✅ GitHub Connected\n\nInstallation ID: \`${workspace.githubInstallationId}\`\n\nTo reconnect: ${env.APP_BASE_URL}/connect/github?workspace_id=${workspace.id}`
+        });
+      }
+    } catch (error: any) {
+      logger.error('Error managing GitHub from settings', error);
+    }
+  });
+
+  app.action('settings_connect_jira', async ({ ack, body, client }: any) => {
+    await ack();
+    try {
+      const actionBody = body as any;
+      const { buildJiraConnectModal } = await import('./onboarding');
+      const modal = buildJiraConnectModal();
+      await client.views.open({
+        trigger_id: actionBody.trigger_id,
+        view: modal
+      });
+    } catch (error: any) {
+      logger.error('Error opening Jira connect from settings', error);
+    }
+  });
+
+  app.action('settings_manage_jira', async ({ ack, body, client }: any) => {
+    await ack();
+    try {
+      const actionBody = body as any;
+      const userId = actionBody.user?.id;
+      const slackTeamId = actionBody.team?.id;
+      const workspace = await db.getWorkspaceBySlackTeamId(slackTeamId);
+      if (!workspace) return;
+      
+      const jiraConnection = await db.getJiraConnection(workspace.id);
+      const context = await loadWorkspaceContext(slackTeamId);
+      const isActive = jiraConnection && hasFeature(context, 'jiraIntegration');
+      
+      if (jiraConnection) {
+        await client.chat.postEphemeral({
+          channel: userId,
+          user: userId,
+          text: `✅ Jira Connected\n\nBase URL: \`${jiraConnection.baseUrl}\`\nEmail: \`${jiraConnection.email}\`\nStatus: ${isActive ? '✅ Active' : '⏳ Waiting for Pro upgrade'}\n\nTo reconnect, use the "Connect Jira" button.`
+        });
+      }
+    } catch (error: any) {
+      logger.error('Error managing Jira from settings', error);
+    }
+  });
+
+  app.action('settings_add_member', async ({ ack, body, client }: any) => {
+    await ack();
+    try {
+      const actionBody = body as any;
+      const { buildAddMemberModal } = await import('./modals');
+      const modal = buildAddMemberModal();
+      await client.views.open({
+        trigger_id: actionBody.trigger_id,
+        view: modal
+      });
+    } catch (error: any) {
+      logger.error('Error opening add member modal from settings', error);
+    }
+  });
+
+  app.action('settings_view_members', async ({ ack, body, client }: any) => {
+    await ack();
+    try {
+      const actionBody = body as any;
+      const userId = actionBody.user?.id;
+      const slackTeamId = actionBody.team?.id;
+      const workspace = await db.getWorkspaceBySlackTeamId(slackTeamId);
+      if (!workspace) return;
+      
+      const members = await db.listMembers(workspace.id);
+      const activeMembers = members.filter((m: Member) => m.isActive && !m.isUnavailable);
+      
+      if (activeMembers.length === 0) {
+        await client.chat.postEphemeral({
+          channel: userId,
+          user: userId,
+          text: '📋 No active members found. Use "Add Member" to add your team.'
+        });
+        return;
+      }
+      
+      const membersList = activeMembers.map((m: Member, idx: number) => {
+        const roles = m.roles.join(', ') || 'No role';
+        const github = m.githubUsernames.join(', ') || 'No GitHub';
+        return `${idx + 1}. <@${m.slackUserId}> - GitHub: ${github} - Roles: ${roles}`;
+      }).join('\n');
+      
+      await client.chat.postEphemeral({
+        channel: userId,
+        user: userId,
+        text: `👥 *Team Members (${activeMembers.length})*\n\n${membersList}`
+      });
+    } catch (error: any) {
+      logger.error('Error viewing members from settings', error);
+    }
+  });
+
+  app.action('settings_manage_teams', async ({ ack, body, client, respond }: any) => {
+    await ack();
+    try {
+      const actionBody = body as any;
+      const userId = actionBody.user?.id;
+      const channelId = actionBody.channel?.id || userId;
+      await sendResponse(client, channelId, userId, '🏢 *Manage Teams*\n\nUse these commands:\n• `/create-team <name> <channel-id>` - Create a team\n• `/list-teams` - List all teams\n• `/map-repo <repo> <team-id>` - Map repository to team', respond);
+    } catch (error: any) {
+      logger.error('Error in settings_manage_teams', error);
+    }
+  });
+
+  app.action('settings_map_repo', async ({ ack, body, client, respond }: any) => {
+    await ack();
+    try {
+      const actionBody = body as any;
+      const userId = actionBody.user?.id;
+      const channelId = actionBody.channel?.id || userId;
+      await sendResponse(client, channelId, userId, '🗺️ *Map Repository*\n\nUse: `/map-repo <repo-full-name> <team-id>`\n\nExample: `/map-repo org/frontend-repo team_1234567890`\n\nUse `/list-teams` to find team IDs.', respond);
+    } catch (error: any) {
+      logger.error('Error in settings_map_repo', error);
+    }
+  });
+
+  app.action('settings_view_repos', async ({ ack, body, client }: any) => {
+    await ack();
+    try {
+      const actionBody = body as any;
+      const userId = actionBody.user?.id;
+      const slackTeamId = actionBody.team?.id;
+      const workspace = await db.getWorkspaceBySlackTeamId(slackTeamId);
+      if (!workspace) return;
+      
+      const repoMappings = await db.listRepoMappings(workspace.id);
+      const teams = await db.listTeams(workspace.id);
+      
+      if (repoMappings.length === 0) {
+        await client.chat.postEphemeral({
+          channel: userId,
+          user: userId,
+          text: '📋 No repositories mapped yet. Use `/map-repo` to map repositories to teams.'
+        });
+        return;
+      }
+      
+      const mappingsList = repoMappings.map((rm: RepoMapping) => {
+        const team = teams.find((t: Team) => t.id === rm.teamId);
+        return `• \`${rm.repoFullName}\` → ${team?.name || 'Unknown Team'} (${rm.teamId})`;
+      }).join('\n');
+      
+      await client.chat.postEphemeral({
+        channel: userId,
+        user: userId,
+        text: `📦 *Repository Mappings (${repoMappings.length})*\n\n${mappingsList}`
+      });
+    } catch (error: any) {
+      logger.error('Error viewing repos from settings', error);
+    }
+  });
+
+  app.action('settings_upgrade', async ({ ack }: any) => {
+    await ack(); // Button opens URL, no action needed
+  });
+
+  app.action('settings_billing', async ({ ack }: any) => {
+    await ack(); // Button opens URL, no action needed
   });
 }
 

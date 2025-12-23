@@ -37,6 +37,8 @@ export const env = {
   SLACK_DEFAULT_CHANNEL_ID: req('SLACK_DEFAULT_CHANNEL_ID'),
 
   GITHUB_WEBHOOK_SECRET: process.env.GITHUB_WEBHOOK_SECRET ?? '',
+  GITHUB_APP_ID: opt('GITHUB_APP_ID'),
+  GITHUB_APP_NAME: opt('GITHUB_APP_NAME', 'reviewflow'),
 
   JIRA_BASE_URL: process.env.JIRA_BASE_URL ?? '',
   JIRA_EMAIL: process.env.JIRA_EMAIL ?? '',

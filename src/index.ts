@@ -13,6 +13,9 @@ import { githubWebhookValidator } from './utils/githubWebhook';
 import { ReminderService } from './services/reminderService';
 import { initAdminConfig } from './utils/permissions';
 import { initFeatureFlags } from './services/featureFlags';
+import { registerGitHubConnectRoutes } from './routes/githubConnect';
+import { registerOnboardingHandlers } from './slack/onboarding';
+import { loadWorkspaceContext } from './services/workspaceContext';
 
 async function main() {
   try {
@@ -50,6 +53,7 @@ async function main() {
 
     registerSlackHandlers(slackApp);
     registerHomeTab(slackApp);
+    registerOnboardingHandlers(slackApp);
 
     // Start reminder service
     const reminderService = new ReminderService(slackApp);
@@ -70,13 +74,86 @@ async function main() {
 
     const app = receiver.app as express.Express;
     
+    // Register GitHub connection routes
+    registerGitHubConnectRoutes(app);
+    
     // Middleware - must parse body as text first for signature validation
     app.use('/webhooks/github', express.text({ type: '*/*' }));
     app.use(bodyParser.json({ type: '*/*' }));
     app.use(express.json());
 
     // Health check
-    app.get('/health', (_req, res) => {
+    app.get('/health', async (_req: express.Request, res: express.Response) => {
+      try {
+        // Check database connection
+        await db.listWorkspaces();
+        res.json({ 
+          status: 'healthy',
+          timestamp: new Date().toISOString(),
+          database: 'connected'
+        });
+      } catch (error: any) {
+        res.status(503).json({
+          status: 'unhealthy',
+          timestamp: new Date().toISOString(),
+          database: 'disconnected',
+          error: error.message
+        });
+      }
+    });
+
+    // Diagnostics endpoint (admin only - basic check)
+    app.get('/diag/workspace/:slackTeamId', asyncHandler(async (req: express.Request, res: express.Response) => {
+      const { slackTeamId } = req.params;
+      
+      try {
+        const workspace = await db.getWorkspaceBySlackTeamId(slackTeamId);
+        if (!workspace) {
+          return res.status(404).json({ error: 'Workspace not found' });
+        }
+
+        const context = await loadWorkspaceContext(slackTeamId);
+        const members = await db.listMembers(workspace.id);
+        const teams = await db.listTeams(workspace.id);
+        const repoMappings = await db.listRepoMappings(workspace.id);
+        const jiraConnection = await db.getJiraConnection(workspace.id);
+        const openPRs = await db.listOpenPrs(workspace.id);
+
+        res.json({
+          workspace: {
+            id: workspace.id,
+            slackTeamId: workspace.slackTeamId,
+            plan: workspace.plan,
+            subscriptionStatus: workspace.subscriptionStatus,
+            githubInstallationId: workspace.githubInstallationId,
+            defaultChannelId: workspace.defaultChannelId
+          },
+          context: {
+            plan: context.plan,
+            status: context.status,
+            usage: context.usage
+          },
+          integrations: {
+            github: !!workspace.githubInstallationId,
+            jira: !!jiraConnection,
+            jiraActive: jiraConnection && context.limits.jiraIntegration
+          },
+          stats: {
+            members: members.length,
+            activeMembers: members.filter((m: any) => m.isActive && !m.isUnavailable).length,
+            teams: teams.length,
+            repoMappings: repoMappings.length,
+            openPRs: openPRs.length
+          }
+        });
+      } catch (error: any) {
+        logger.error('Error in diagnostics endpoint', error);
+        res.status(500).json({ error: error.message });
+      }
+    }));
+
+    // Legacy health check (kept for backward compatibility)
+    app.get('/health-legacy', (_req, res) => {
       res.json({ 
         status: 'OK', 
         timestamp: new Date().toISOString(),

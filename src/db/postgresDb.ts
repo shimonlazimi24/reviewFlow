@@ -345,6 +345,7 @@ export class PostgresDb {
   private rowToMember(row: any): Member {
     return {
       id: row.id,
+      workspaceId: row.workspace_id,
       slackUserId: row.slack_user_id,
       githubUsernames: row.github_usernames || [],
       roles: row.roles || [],
@@ -357,6 +358,7 @@ export class PostgresDb {
   private rowToPr(row: any): PrRecord {
     return {
       id: row.id,
+      workspaceId: row.workspace_id,
       repoFullName: row.repo_full_name,
       number: row.number,
       title: row.title,

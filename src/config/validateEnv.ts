@@ -24,9 +24,9 @@ const validationRules: ValidationRule[] = [
   },
   {
     name: 'SLACK_DEFAULT_CHANNEL_ID',
-    required: true,
-    validator: (v) => v.length > 0,
-    message: 'SLACK_DEFAULT_CHANNEL_ID must be a valid channel ID'
+    required: false, // Deprecated: now per-workspace
+    validator: (v) => !v || v.length > 0,
+    message: 'SLACK_DEFAULT_CHANNEL_ID must be a valid channel ID (optional, deprecated)'
   },
   {
     name: 'PORT',

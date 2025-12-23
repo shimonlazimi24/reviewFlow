@@ -7,6 +7,7 @@ export type Stack = 'FE' | 'BE' | 'MIXED';
 
 export interface Team {
   id: string;
+  workspaceId: string; // Workspace this team belongs to
   name: string;
   slackChannelId: string; // Default channel for team notifications
   createdAt: number;
@@ -15,6 +16,7 @@ export interface Team {
 
 export interface RepoMapping {
   id: string;
+  workspaceId: string; // Workspace this mapping belongs to
   teamId: string;
   repoFullName: string; // e.g., "org/repo"
   createdAt: number;
@@ -22,20 +24,34 @@ export interface RepoMapping {
 
 export interface Workspace {
   id: string; // Workspace ID (internal)
-  slackTeamId: string; // Slack team ID (primary key for lookup)
+  slackTeamId: string; // Slack team ID (unique, primary key for lookup)
   name?: string;
   plan: 'free' | 'pro' | 'enterprise';
+  defaultChannelId?: string; // Per-workspace default channel (replaces env SLACK_DEFAULT_CHANNEL_ID)
   polarCustomerId?: string;
   polarSubscriptionId?: string;
   subscriptionStatus: 'active' | 'canceled' | 'revoked' | 'past_due' | 'incomplete' | 'unknown';
   currentPeriodEnd?: number; // Unix timestamp
   githubInstallationId?: string; // GitHub App installation ID
+  githubAccount?: string; // GitHub org/user name
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface JiraConnection {
+  id: string;
+  workspaceId: string;
+  baseUrl: string;
+  authType: 'basic' | 'oauth';
+  tokenEncrypted: string; // Encrypted API token
+  email: string;
   createdAt: number;
   updatedAt: number;
 }
 
 export interface Member {
   id: string;
+  workspaceId: string; // Workspace this member belongs to
   slackUserId: string;
   githubUsernames: string[];
   roles: Role[];
@@ -47,6 +63,7 @@ export interface Member {
 
 export interface PrRecord {
   id: string;
+  workspaceId: string; // Workspace this PR belongs to
   repoFullName: string;
   number: number;
   title: string;
@@ -87,6 +104,8 @@ export interface IDatabase {
   addWorkspace(workspace: Workspace): Promise<void>;
   getWorkspace(id: string): Promise<Workspace | undefined>;
   getWorkspaceBySlackTeamId(slackTeamId: string): Promise<Workspace | undefined>;
+  getWorkspaceByGitHubInstallation(installationId: string): Promise<Workspace | undefined>;
+  listWorkspaces(): Promise<Workspace[]>;
   upsertWorkspace(workspace: Workspace): Promise<void>;
   updateWorkspace(id: string, updates: Partial<Workspace>): Promise<void>;
   updateWorkspacePlan(slackTeamId: string, plan: 'free' | 'pro' | 'enterprise', status: 'active' | 'canceled' | 'revoked' | 'past_due' | 'incomplete' | 'unknown', subscriptionId?: string, customerId?: string, periodEnd?: number): Promise<void>;
@@ -107,25 +126,25 @@ export interface IDatabase {
   // Member operations
   addMember(member: Member): Promise<void>;
   getMember(id: string): Promise<Member | undefined>;
-  listMembers(teamId?: string): Promise<Member[]>;
+  listMembers(workspaceId: string, teamId?: string): Promise<Member[]>;
   updateMember(id: string, updates: Partial<Member>): Promise<void>;
   removeMember(id: string): Promise<void>;
   
   // Team operations
   addTeam(team: Team): Promise<void>;
   getTeam(id: string): Promise<Team | undefined>;
-  listTeams(): Promise<Team[]>;
+  listTeams(workspaceId: string): Promise<Team[]>;
   updateTeam(id: string, updates: Partial<Team>): Promise<void>;
   removeTeam(id: string): Promise<void>;
   
   // Repo mapping operations
   addRepoMapping(mapping: RepoMapping): Promise<void>;
-  getRepoMapping(repoFullName: string): Promise<RepoMapping | undefined>;
-  listRepoMappings(teamId?: string): Promise<RepoMapping[]>;
+  getRepoMapping(workspaceId: string, repoFullName: string): Promise<RepoMapping | undefined>;
+  listRepoMappings(workspaceId: string, teamId?: string): Promise<RepoMapping[]>;
   removeRepoMapping(id: string): Promise<void>;
   
   // PR operations
-  findPr(repoFullName: string, number: number): Promise<PrRecord | undefined>;
+  findPr(workspaceId: string, repoFullName: string, number: number): Promise<PrRecord | undefined>;
   upsertPr(pr: PrRecord): Promise<PrRecord>;
   updatePr(id: string, updates: Partial<PrRecord>): Promise<void>;
   getPr(id: string): Promise<PrRecord | undefined>;
@@ -147,12 +166,13 @@ class MemoryDb implements IDatabase {
   private subscriptions: Map<string, any> = new Map(); // key: workspaceId
   private usage: Map<string, any> = new Map(); // key: workspaceId:month
   private auditLogs: Array<any> = [];
+  private jiraConnections: Map<string, JiraConnection> = new Map(); // key: workspaceId
   private members: Map<string, Member> = new Map();
   private teams: Map<string, Team> = new Map();
-  private repoMappings: Map<string, RepoMapping> = new Map(); // key: repoFullName
+  private repoMappings: Map<string, RepoMapping> = new Map(); // key: workspaceId:repoFullName
   private prs: Map<string, PrRecord> = new Map();
   private assignments: Map<string, Assignment> = new Map();
-  private prByRepoAndNumber: Map<string, PrRecord> = new Map(); // key: "repo/number"
+  private prByRepoAndNumber: Map<string, PrRecord> = new Map(); // key: "workspaceId:repo/number"
 
   // Member operations (async for compatibility with PostgreSQL)
         async addMember(member: Member): Promise<void> {
@@ -168,8 +188,8 @@ class MemoryDb implements IDatabase {
     return this.members.get(id);
   }
 
-  async listMembers(teamId?: string): Promise<Member[]> {
-    const all = Array.from(this.members.values());
+  async listMembers(workspaceId: string, teamId?: string): Promise<Member[]> {
+    const all = Array.from(this.members.values()).filter(m => m.workspaceId === workspaceId);
     if (teamId) {
       return all.filter(m => m.teamId === teamId);
     }
@@ -204,6 +224,14 @@ class MemoryDb implements IDatabase {
 
   async getWorkspaceBySlackTeamId(slackTeamId: string): Promise<Workspace | undefined> {
     return Array.from(this.workspaces.values()).find(w => w.slackTeamId === slackTeamId);
+  }
+
+  async getWorkspaceByGitHubInstallation(installationId: string): Promise<Workspace | undefined> {
+    return Array.from(this.workspaces.values()).find(w => w.githubInstallationId === installationId);
+  }
+
+  async listWorkspaces(): Promise<Workspace[]> {
+    return Array.from(this.workspaces.values());
   }
 
   async upsertWorkspace(workspace: Workspace): Promise<void> {
@@ -321,13 +349,13 @@ class MemoryDb implements IDatabase {
   }
 
   // PR operations (async for compatibility with PostgreSQL)
-  async findPr(repoFullName: string, number: number): Promise<PrRecord | undefined> {
-    const key = `${repoFullName}#${number}`;
+  async findPr(workspaceId: string, repoFullName: string, number: number): Promise<PrRecord | undefined> {
+    const key = `${workspaceId}:${repoFullName}#${number}`;
     return this.prByRepoAndNumber.get(key);
   }
 
   async upsertPr(pr: PrRecord): Promise<PrRecord> {
-    const key = `${pr.repoFullName}#${pr.number}`;
+    const key = `${pr.workspaceId}:${pr.repoFullName}#${pr.number}`;
     this.prs.set(pr.id, pr);
     this.prByRepoAndNumber.set(key, pr);
     return pr;
@@ -338,7 +366,7 @@ class MemoryDb implements IDatabase {
     if (existing) {
       const updated = { ...existing, ...updates };
       this.prs.set(id, updated);
-      const key = `${updated.repoFullName}#${updated.number}`;
+      const key = `${updated.workspaceId}:${updated.repoFullName}#${updated.number}`;
       this.prByRepoAndNumber.set(key, updated);
     }
   }
@@ -347,8 +375,8 @@ class MemoryDb implements IDatabase {
     return this.prs.get(id);
   }
 
-  async listOpenPrs(teamId?: string): Promise<PrRecord[]> {
-    const all = Array.from(this.prs.values()).filter(p => p.status === 'OPEN');
+  async listOpenPrs(workspaceId: string, teamId?: string): Promise<PrRecord[]> {
+    const all = Array.from(this.prs.values()).filter(p => p.workspaceId === workspaceId && p.status === 'OPEN');
     if (teamId) {
       return all.filter(p => p.teamId === teamId);
     }
@@ -364,8 +392,8 @@ class MemoryDb implements IDatabase {
     return this.teams.get(id);
   }
 
-  async listTeams(): Promise<Team[]> {
-    return Array.from(this.teams.values());
+  async listTeams(workspaceId: string): Promise<Team[]> {
+    return Array.from(this.teams.values()).filter(t => t.workspaceId === workspaceId);
   }
 
   async updateTeam(id: string, updates: Partial<Team>): Promise<void> {
@@ -383,15 +411,17 @@ class MemoryDb implements IDatabase {
 
   // Repo mapping operations
   async addRepoMapping(mapping: RepoMapping): Promise<void> {
-    this.repoMappings.set(mapping.repoFullName, mapping);
+    const key = `${mapping.workspaceId}:${mapping.repoFullName}`;
+    this.repoMappings.set(key, mapping);
   }
 
-  async getRepoMapping(repoFullName: string): Promise<RepoMapping | undefined> {
-    return this.repoMappings.get(repoFullName);
+  async getRepoMapping(workspaceId: string, repoFullName: string): Promise<RepoMapping | undefined> {
+    const key = `${workspaceId}:${repoFullName}`;
+    return this.repoMappings.get(key);
   }
 
-  async listRepoMappings(teamId?: string): Promise<RepoMapping[]> {
-    const all = Array.from(this.repoMappings.values());
+  async listRepoMappings(workspaceId: string, teamId?: string): Promise<RepoMapping[]> {
+    const all = Array.from(this.repoMappings.values()).filter(m => m.workspaceId === workspaceId);
     if (teamId) {
       return all.filter(m => m.teamId === teamId);
     }
@@ -401,7 +431,8 @@ class MemoryDb implements IDatabase {
   async removeRepoMapping(id: string): Promise<void> {
     const mapping = Array.from(this.repoMappings.values()).find(m => m.id === id);
     if (mapping) {
-      this.repoMappings.delete(mapping.repoFullName);
+      const key = `${mapping.workspaceId}:${mapping.repoFullName}`;
+      this.repoMappings.delete(key);
     }
   }
 

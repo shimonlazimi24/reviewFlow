@@ -35,8 +35,6 @@ function prId(): string {
 }
 
 export function githubWebhookHandlerFactory(args: { slackApp: App }) {
-  const jira = jiraEnabled ? new JiraService() : undefined;
-
   return async function githubWebhookHandler(req: Request, res: Response) {
     try {
       const event = String(req.headers['x-github-event'] ?? '');
@@ -64,11 +62,27 @@ export function githubWebhookHandlerFactory(args: { slackApp: App }) {
       // Extract installation ID from webhook (if using GitHub App)
       const installationId = (req.body as any)?.installation?.id;
       
+      if (!installationId) {
+        logger.warn('GitHub webhook received without installation ID');
+        return res.status(400).json({
+          error: 'Missing installation ID',
+          message: 'GitHub App installation ID is required'
+        });
+      }
+
+      // Resolve workspace by GitHub installation ID
+      const workspace = await db.getWorkspaceByGitHubInstallation(String(installationId));
+      
+      if (!workspace) {
+        logger.warn('GitHub webhook received for unknown installation', { installationId });
+        return res.status(403).json({
+          error: 'Unknown installation',
+          message: 'This GitHub installation is not connected to any workspace.'
+        });
+      }
+
       // Load workspace context
-      // TODO: Map installationId to workspaceId via database
-      // For now, use default channel ID as team identifier
-      const defaultTeamId = env.SLACK_DEFAULT_CHANNEL_ID;
-      const context = await loadWorkspaceContext(defaultTeamId);
+      const context = await loadWorkspaceContext(workspace.slackTeamId);
       
       // Check usage limits
       if (isUsageLimitExceeded(context)) {
@@ -82,22 +96,8 @@ export function githubWebhookHandlerFactory(args: { slackApp: App }) {
         });
       }
 
-      // Validate GitHub installation if required
-      if (installationId && context.githubInstallationId) {
-        if (String(installationId) !== String(context.githubInstallationId)) {
-          logger.warn('GitHub installation ID mismatch', {
-            expected: context.githubInstallationId,
-            received: installationId
-          });
-          return res.status(403).json({
-            error: 'Invalid installation',
-            message: 'This repository is not authorized for this workspace.'
-          });
-        }
-      }
-
-      // Find team for this repo
-      const repoMapping = await db.getRepoMapping(repoFullName);
+      // Find team for this repo (workspace-scoped)
+      const repoMapping = await db.getRepoMapping(workspace.id, repoFullName);
       const teamId = repoMapping?.teamId;
 
             let issueKey =
@@ -111,10 +111,10 @@ export function githubWebhookHandlerFactory(args: { slackApp: App }) {
 
       // opened / ready_for_review / reopened
       if (['opened', 'ready_for_review', 'reopened'].includes(action)) {
-        const existing = await db.findPr(repoFullName, number);
+        const existing = await db.findPr(workspace.id, repoFullName, number);
 
-        // Determine channel - use team channel if available, otherwise default
-        let slackChannelId = env.SLACK_DEFAULT_CHANNEL_ID;
+        // Determine channel - use team channel if available, otherwise workspace default
+        let slackChannelId = workspace.defaultChannelId || env.SLACK_DEFAULT_CHANNEL_ID || '';
         if (teamId) {
           const team = await db.getTeam(teamId);
           if (team?.slackChannelId) {
@@ -124,6 +124,7 @@ export function githubWebhookHandlerFactory(args: { slackApp: App }) {
 
         const record = await db.upsertPr({
           id: existing?.id ?? prId(),
+          workspaceId: workspace.id,
           repoFullName,
           number,
           title,
@@ -162,6 +163,7 @@ export function githubWebhookHandlerFactory(args: { slackApp: App }) {
           });
 
           const reviewers = await pickReviewers({
+            workspaceId: workspace.id,
             stack: record.stack === 'MIXED' ? 'MIXED' : record.stack,
             requiredReviewers: 1,
             authorGithub: record.authorGithub,
@@ -183,10 +185,12 @@ export function githubWebhookHandlerFactory(args: { slackApp: App }) {
 
         // Jira enrichment + side effects
         let jiraInfo = undefined;
+        const jiraConnection = await db.getJiraConnection(workspace.id);
+        const jiraEnabled = jiraConnection && hasFeature(context, 'jiraIntegration');
+        const jira = jiraEnabled ? new JiraService(jiraConnection) : undefined;
         
         // Auto-create Jira ticket if enabled and no ticket exists
-        // Check if Jira integration is available for this plan
-        if (jira && !issueKey && env.JIRA_AUTO_CREATE_ON_PR_OPEN && env.JIRA_PROJECT_KEY && hasFeature(context, 'jiraIntegration')) {
+        if (jira && !issueKey && env.JIRA_AUTO_CREATE_ON_PR_OPEN && env.JIRA_PROJECT_KEY) {
           try {
             const metadataParts = [
               `PR: ${url}`,
@@ -295,24 +299,24 @@ export function githubWebhookHandlerFactory(args: { slackApp: App }) {
             console.warn('Failed to update Slack message, posting new one:', updateError);
             // Fall through to post new message
             const slackRes = await args.slackApp.client.chat.postMessage({
-              channel: env.SLACK_DEFAULT_CHANNEL_ID,
+              channel: slackChannelId,
               text: `PR #${number}: ${title}`,
               blocks
             });
             if (slackRes.ts) {
-              await db.updatePr(record.id, { slackMessageTs: slackRes.ts, slackChannelId: env.SLACK_DEFAULT_CHANNEL_ID });
+              await db.updatePr(record.id, { slackMessageTs: slackRes.ts, slackChannelId });
             }
           }
         } else {
           // Post new message
           const slackRes = await args.slackApp.client.chat.postMessage({
-            channel: env.SLACK_DEFAULT_CHANNEL_ID,
+            channel: slackChannelId,
             text: `New PR #${number}: ${title}`,
             blocks
           });
 
           if (slackRes.ts) {
-            await db.updatePr(record.id, { slackMessageTs: slackRes.ts, slackChannelId: env.SLACK_DEFAULT_CHANNEL_ID });
+            await db.updatePr(record.id, { slackMessageTs: slackRes.ts, slackChannelId });
           }
         }
 
@@ -323,9 +327,14 @@ export function githubWebhookHandlerFactory(args: { slackApp: App }) {
       // closed (check merged)
       if (action === 'closed') {
         const merged = Boolean(pr.merged);
-        const existing = await db.findPr(repoFullName, number);
+        const existing = await db.findPr(workspace.id, repoFullName, number);
         if (existing) {
           await db.updatePr(existing.id, { status: merged ? 'MERGED' : 'CLOSED' });
+
+          // Get Jira connection for merge actions
+          const jiraConnection = await db.getJiraConnection(workspace.id);
+          const jiraEnabledForWorkspace = jiraConnection && hasFeature(context, 'jiraIntegration');
+          const jiraForMerge = jiraEnabledForWorkspace ? new JiraService(jiraConnection) : undefined;
 
           // Update Slack message if it exists
           if (existing.slackMessageTs) {
@@ -335,7 +344,16 @@ export function githubWebhookHandlerFactory(args: { slackApp: App }) {
               const reviewerResults = await Promise.all(reviewerPromises);
               const reviewers = reviewerResults.filter((m): m is NonNullable<typeof m> => m !== undefined);
 
-              const blocks = buildPrMessageBlocks({ pr: { ...existing, status: merged ? 'MERGED' : 'CLOSED' }, reviewers, jira: undefined });
+              let jiraInfoForClose = undefined;
+              if (existing.jiraIssueKey && jiraForMerge) {
+                try {
+                  jiraInfoForClose = await jiraForMerge.getIssueMinimal(existing.jiraIssueKey);
+                } catch (e) {
+                  logger.warn('Failed to fetch Jira info on close', e);
+                }
+              }
+
+              const blocks = buildPrMessageBlocks({ pr: { ...existing, status: merged ? 'MERGED' : 'CLOSED' }, reviewers, jira: jiraInfoForClose });
               
               await args.slackApp.client.chat.update({
                 channel: existing.slackChannelId,
@@ -344,19 +362,19 @@ export function githubWebhookHandlerFactory(args: { slackApp: App }) {
                 blocks
               });
             } catch (updateError) {
-              console.warn('Failed to update Slack message on close:', updateError);
+              logger.warn('Failed to update Slack message on close', updateError);
             }
           }
-        }
 
-        if (merged && jira && issueKey) {
-          try {
-            await jira.addComment(issueKey, `PR merged: ${url}`);
-            if (env.JIRA_AUTO_TRANSITION_ON_MERGE) {
-              await jira.transitionByName(issueKey, env.JIRA_MERGE_TRANSITION_NAME);
+          if (merged && jiraForMerge && existing.jiraIssueKey) {
+            try {
+              await jiraForMerge.addComment(existing.jiraIssueKey, `PR merged: ${url}`);
+              if (env.JIRA_AUTO_TRANSITION_ON_MERGE) {
+                await jiraForMerge.transitionByName(existing.jiraIssueKey, env.JIRA_MERGE_TRANSITION_NAME);
+              }
+            } catch (e) {
+              logger.warn('Jira merge error', e);
             }
-          } catch (e) {
-            console.warn('Jira merge error:', (e as any)?.message ?? e);
           }
         }
 

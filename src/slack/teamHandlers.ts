@@ -53,8 +53,17 @@ export function registerTeamHandlers(app: App) {
       const slackChannelId = channelParts.join(' ');
 
       // Check team limit
-      const teams = await db.listTeams();
       const slackTeamId = command.team_id;
+      if (!slackTeamId) {
+        await sendResponse(client, channelId, userId, '❌ Missing Slack Team ID', respond);
+        return;
+      }
+      const workspace = await db.getWorkspaceBySlackTeamId(slackTeamId);
+      if (!workspace) {
+        await sendResponse(client, channelId, userId, '❌ Workspace not found', respond);
+        return;
+      }
+      const teams = await db.listTeams(workspace.id);
       const limitCheck = await checkWorkspaceLimit(slackTeamId, 'maxTeams', teams.length);
       if (!limitCheck.allowed) {
         await sendResponse(client, channelId, userId, `❌ Team limit exceeded. You have ${limitCheck.current} teams, maximum allowed: ${limitCheck.limit}.\n\nUpgrade to premium for unlimited teams.`, respond);
@@ -64,6 +73,7 @@ export function registerTeamHandlers(app: App) {
       const newTeamId = `team_${Date.now()}_${Math.random().toString(16).slice(2)}`;
       const team: Team = {
         id: newTeamId,
+        workspaceId: workspace.id,
         name: teamName,
         slackChannelId,
         createdAt: Date.now(),
@@ -84,9 +94,19 @@ export function registerTeamHandlers(app: App) {
     await ack();
     const userId = command.user_id;
     const channelId = command.channel_id;
+    const slackTeamId = command.team_id;
 
     try {
-      const teams = await db.listTeams();
+      if (!slackTeamId) {
+        await sendResponse(client, channelId, userId, '❌ Missing Slack Team ID', respond);
+        return;
+      }
+      const workspace = await db.getWorkspaceBySlackTeamId(slackTeamId);
+      if (!workspace) {
+        await sendResponse(client, channelId, userId, '❌ Workspace not found', respond);
+        return;
+      }
+      const teams = await db.listTeams(workspace.id);
 
       if (teams.length === 0) {
         await sendResponse(client, channelId, userId, '📋 No teams configured yet.\n\nUse `/create-team` to create a team.', respond);
@@ -94,8 +114,8 @@ export function registerTeamHandlers(app: App) {
       }
 
       const teamDetails = await Promise.all(teams.map(async (team: Team) => {
-        const members = await db.listMembers(team.id);
-        const repos = await db.listRepoMappings(team.id);
+        const members = await db.listMembers(workspace.id, team.id);
+        const repos = await db.listRepoMappings(workspace.id, team.id);
         const status = team.isActive ? '✅ Active' : '❌ Inactive';
         return `${status} *${team.name}* (ID: ${team.id})\n  Channel: <#${team.slackChannelId}>\n  Members: ${members.length}\n  Repositories: ${repos.length}`;
       }));
@@ -124,15 +144,26 @@ export function registerTeamHandlers(app: App) {
 
       const [repoFullName, teamId] = args;
 
+      const slackTeamId = command.team_id;
+      if (!slackTeamId) {
+        await sendResponse(client, channelId, userId, '❌ Missing Slack Team ID', respond);
+        return;
+      }
+      const workspace = await db.getWorkspaceBySlackTeamId(slackTeamId);
+      if (!workspace) {
+        await sendResponse(client, channelId, userId, '❌ Workspace not found', respond);
+        return;
+      }
+
       // Verify team exists
       const team = await db.getTeam(teamId);
-      if (!team) {
+      if (!team || team.workspaceId !== workspace.id) {
         await sendResponse(client, channelId, userId, `❌ Team not found: ${teamId}\n\nUse /list-teams to see available teams.`, respond);
         return;
       }
 
       // Check if repo is already mapped
-      const existing = await db.getRepoMapping(repoFullName);
+      const existing = await db.getRepoMapping(workspace.id, repoFullName);
       if (existing) {
         await sendResponse(client, channelId, userId, `⚠️ Repository "${repoFullName}" is already mapped to team "${existing.teamId}".\n\nUse /unmap-repo ${repoFullName} to remove the mapping first.`, respond);
         return;
@@ -141,6 +172,7 @@ export function registerTeamHandlers(app: App) {
       const mappingId = `repo_${Date.now()}_${Math.random().toString(16).slice(2)}`;
       const mapping: RepoMapping = {
         id: mappingId,
+        workspaceId: workspace.id,
         teamId,
         repoFullName,
         createdAt: Date.now()
@@ -160,12 +192,23 @@ export function registerTeamHandlers(app: App) {
     await ack();
     const userId = command.user_id;
     const channelId = command.channel_id;
+    const slackTeamId = command.team_id;
 
     try {
+      if (!slackTeamId) {
+        await sendResponse(client, channelId, userId, '❌ Missing Slack Team ID', respond);
+        return;
+      }
+      const workspace = await db.getWorkspaceBySlackTeamId(slackTeamId);
+      if (!workspace) {
+        await sendResponse(client, channelId, userId, '❌ Workspace not found', respond);
+        return;
+      }
+
       const args = command.text?.trim();
       const filterTeamId = args || undefined;
 
-      const repos = await db.listRepoMappings(filterTeamId);
+      const repos = await db.listRepoMappings(workspace.id, filterTeamId);
 
       if (repos.length === 0) {
         const message = filterTeamId
@@ -206,7 +249,18 @@ export function registerTeamHandlers(app: App) {
         return;
       }
 
-      const mapping = await db.getRepoMapping(args);
+      const slackTeamId = command.team_id;
+      if (!slackTeamId) {
+        await sendResponse(client, channelId, userId, '❌ Missing Slack Team ID', respond);
+        return;
+      }
+      const workspace = await db.getWorkspaceBySlackTeamId(slackTeamId);
+      if (!workspace) {
+        await sendResponse(client, channelId, userId, '❌ Workspace not found', respond);
+        return;
+      }
+
+      const mapping = await db.getRepoMapping(workspace.id, args);
       if (!mapping) {
         await sendResponse(client, channelId, userId, `❌ Repository mapping not found: ${args}`, respond);
         return;
@@ -245,8 +299,19 @@ export function registerTeamHandlers(app: App) {
         return;
       }
 
+      const slackTeamId = command.team_id;
+      if (!slackTeamId) {
+        await sendResponse(client, channelId, userId, '❌ Missing Slack Team ID', respond);
+        return;
+      }
+      const workspace = await db.getWorkspaceBySlackTeamId(slackTeamId);
+      if (!workspace) {
+        await sendResponse(client, channelId, userId, '❌ Workspace not found', respond);
+        return;
+      }
+
       // Find member
-      const members = await db.listMembers();
+      const members = await db.listMembers(workspace.id);
       const member = members.find((m: any) => m.slackUserId === slackUserId);
 
       if (!member) {

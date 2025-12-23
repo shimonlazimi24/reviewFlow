@@ -27,13 +27,14 @@ export async function loadWorkspaceContext(slackTeamId: string): Promise<Workspa
     let workspace = await db.getWorkspaceBySlackTeamId(slackTeamId);
     
     if (!workspace) {
-      // Create default workspace
+      // Create default workspace on first access
       const workspaceId = `workspace_${slackTeamId}`;
       workspace = {
         id: workspaceId,
         slackTeamId,
         plan: 'free',
         subscriptionStatus: 'active',
+        defaultChannelId: undefined, // Will be set via settings
         createdAt: Date.now(),
         updatedAt: Date.now()
       };
@@ -47,6 +48,10 @@ export async function loadWorkspaceContext(slackTeamId: string): Promise<Workspa
         createdAt: Date.now(),
         updatedAt: Date.now()
       });
+      
+      // Log workspace creation
+      const { logInstallation } = require('../utils/auditLog');
+      await logInstallation(workspaceId, '', 'slack');
     }
 
     // Get subscription (use workspace plan if available, otherwise legacy subscription)
