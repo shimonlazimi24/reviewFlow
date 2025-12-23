@@ -121,21 +121,22 @@ export class PolarService {
       const errorDetails = error.response?.data || {};
       const errorMessage = errorDetails.detail || errorDetails.message || error.message;
       
+      // Reconstruct payload info for logging (payload is in try block scope)
+      const payloadInfo = {
+        hasProductId: !!productId,
+        hasPriceId: !!priceId,
+        hasSuccessUrl: !!POLAR_SUCCESS_URL,
+        hasCancelUrl: !!POLAR_CANCEL_URL,
+        productId: productId ? (productId.length > 20 ? productId.substring(0, 20) + '...' : productId) : 'none',
+        priceId: priceId ? (priceId.length > 20 ? priceId.substring(0, 20) + '...' : priceId) : 'none'
+      };
+      
       logger.error('Failed to create Polar checkout session', {
         error: error.message,
         response: errorDetails,
         status: error.response?.status,
         statusText: error.response?.statusText,
-        productId: env.POLAR_PRO_PRODUCT_ID ? (env.POLAR_PRO_PRODUCT_ID.length > 20 ? env.POLAR_PRO_PRODUCT_ID.substring(0, 20) + '...' : env.POLAR_PRO_PRODUCT_ID) : 'none',
-        priceId: env.POLAR_PRO_PRICE_ID ? (env.POLAR_PRO_PRICE_ID.length > 20 ? env.POLAR_PRO_PRICE_ID.substring(0, 20) + '...' : env.POLAR_PRO_PRICE_ID) : 'none',
-        payload: {
-          hasProductId: !!payload.product_id,
-          hasPriceId: !!payload.price_id,
-          hasSuccessUrl: !!payload.success_url,
-          hasCancelUrl: !!payload.cancel_url,
-          hasMetadata: !!payload.metadata
-        },
-        fullPayload: JSON.stringify(payload, null, 2)
+        ...payloadInfo
       });
       
       // Provide more helpful error message
