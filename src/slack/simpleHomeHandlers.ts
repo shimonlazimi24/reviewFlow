@@ -15,15 +15,15 @@ import {
 export function registerSimpleHomeHandlers(app: App) {
   // Handle app_home_opened event
   app.event('app_home_opened', async ({ event, client }) => {
+    const userId = event.user;
+    const teamId = (event as any).team;
+
+    if (!teamId) {
+      logger.warn('Home tab opened without team ID');
+      return;
+    }
+
     try {
-      const userId = event.user;
-      const teamId = (event as any).team;
-
-      if (!teamId) {
-        logger.warn('Home tab opened without team ID');
-        return;
-      }
-
       const configured = await isWorkspaceConfigured(teamId);
       const blocks = configured 
         ? await buildConfiguredHomeTab(teamId)
@@ -42,8 +42,12 @@ export function registerSimpleHomeHandlers(app: App) {
       logger.error('Error publishing simple home tab', error);
       // Don't crash on invalid_auth - just log it
       if (error?.data?.error === 'invalid_auth') {
-        logger.error('Slack authentication failed. Please check your SLACK_BOT_TOKEN is valid and the app is installed.');
+        logger.error('❌ Slack authentication failed. Please check your SLACK_BOT_TOKEN is valid and the app is installed.', {
+          action: 'Get a new token from: https://api.slack.com/apps → Your App → OAuth & Permissions → Bot User OAuth Token',
+          note: 'The Home tab will not work until the token is fixed.'
+        });
       }
+      // Event is automatically acknowledged by Bolt, but we log the error
     }
   });
 

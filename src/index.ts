@@ -81,7 +81,7 @@ async function main() {
         clientId: env.SLACK_CLIENT_ID,
         clientSecret: env.SLACK_CLIENT_SECRET,
         stateSecret: env.SLACK_STATE_SECRET || env.SLACK_SIGNING_SECRET,
-        scopes: ['app_mentions:read', 'app_home', 'channels:history', 'channels:read', 'chat:write', 'chat:write.public', 'commands', 'im:history', 'im:read', 'im:write', 'users:read', 'users:read.email'],
+        scopes: ['app_mentions:read', 'channels:history', 'channels:read', 'chat:write', 'chat:write.public', 'commands', 'im:history', 'im:read', 'im:write', 'users:read', 'users:read.email'],
         installationStore
       });
       
