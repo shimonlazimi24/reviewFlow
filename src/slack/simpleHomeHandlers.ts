@@ -377,7 +377,9 @@ export function registerSimpleHomeHandlers(app: App) {
 
   // Handle "GitHub" button from Home Tab
   app.action('home_connect_github', async ({ ack, body, client }) => {
+    // Acknowledge immediately to prevent timeout
     await ack();
+    
     const actionBody = body as any;
     
     logger.info('GitHub button clicked from Home Tab', {
@@ -465,9 +467,8 @@ export function registerSimpleHomeHandlers(app: App) {
     }
 
     try {
-      // Get or create workspace
+      // Get or create workspace (do this quickly)
       let workspace = await db.getWorkspaceBySlackTeamId(teamId);
-      logger.info('Workspace lookup for GitHub', { teamId, found: !!workspace });
       
       if (!workspace) {
         // Create workspace if it doesn't exist
@@ -487,18 +488,17 @@ export function registerSimpleHomeHandlers(app: App) {
         logger.info('Created workspace for GitHub connection', { workspaceId, teamId });
       }
 
-      // Import and use existing GitHub connection modal
-      logger.info('Building GitHub connection modal', { workspaceId: workspace.id });
+      // Import and build modal (do this quickly to avoid timeout)
       const { buildGitHubConnectionModal } = await import('./onboardingWizard');
       const modal = buildGitHubConnectionModal(workspace.id);
       
-      logger.info('Opening GitHub connection modal', { triggerId: triggerId?.substring(0, 10) + '...' });
+      // Open modal immediately
       await client.views.open({
         trigger_id: triggerId,
         view: modal
       });
       
-      logger.info('GitHub connection modal opened successfully');
+      logger.info('GitHub connection modal opened successfully', { workspaceId: workspace.id });
     } catch (error: any) {
       logger.error('Error opening GitHub connection modal', error, {
         teamId,
