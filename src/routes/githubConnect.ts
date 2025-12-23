@@ -1,6 +1,6 @@
 // GitHub App installation routes
 import express from 'express';
-import { db } from '../db/memoryDb';
+import { db, Workspace } from '../db/memoryDb';
 import { logger } from '../utils/logger';
 import { env } from '../config/env';
 
@@ -22,18 +22,35 @@ export function registerGitHubConnectRoutes(app: express.Express) {
         `);
       }
 
-      // Get workspace
-      const workspace = await db.getWorkspace(workspace_id as string);
+      // Get or create workspace
+      let workspace = await db.getWorkspace(workspace_id as string);
+      
+      // If workspace doesn't exist, try to find it by slackTeamId (extracted from workspace_id format)
       if (!workspace) {
-        return res.status(404).send(`
-          <html>
-            <head><title>Workspace Not Found</title></head>
-            <body>
-              <h1>Workspace Not Found</h1>
-              <p>The workspace could not be found. Please try again from Slack.</p>
-            </body>
-          </html>
-        `);
+        // workspace_id format is usually "workspace_T0A4D4NF3RD"
+        const slackTeamId = (workspace_id as string).replace(/^workspace_/, '');
+        if (slackTeamId && slackTeamId !== workspace_id) {
+          workspace = await db.getWorkspaceBySlackTeamId(slackTeamId);
+        }
+      }
+      
+      // If still not found, create a default workspace
+      if (!workspace) {
+        const slackTeamId = (workspace_id as string).replace(/^workspace_/, '') || 'unknown';
+        const workspaceId = `workspace_${slackTeamId}`;
+        workspace = {
+          id: workspaceId,
+          slackTeamId: slackTeamId,
+          plan: 'free' as const,
+          subscriptionStatus: 'active' as const,
+          setupComplete: false,
+          setupStep: 'channel',
+          goLiveEnabled: false,
+          createdAt: Date.now(),
+          updatedAt: Date.now()
+        };
+        await db.addWorkspace(workspace);
+        logger.info('Created workspace for GitHub connection', { workspaceId, slackTeamId });
       }
 
       // If GitHub App ID is configured, redirect to GitHub App installation
