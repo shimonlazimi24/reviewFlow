@@ -100,6 +100,10 @@ async function main() {
     registerSlackHandlers(slackApp);
     registerHomeTab(slackApp);
     registerOnboardingHandlers(slackApp);
+    
+    // Register simplified home tab and setup handlers
+    const { registerSimpleHomeHandlers } = await import('./slack/simpleHomeHandlers');
+    registerSimpleHomeHandlers(slackApp);
 
     // Start reminder service
     const reminderService = new ReminderService(slackApp);

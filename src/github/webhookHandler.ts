@@ -314,9 +314,17 @@ export function githubWebhookHandlerFactory(args: { slackApp: App }) {
             }
 
             // Infer stack: try labels first, then fallback to path rules
+            // Get workspace settings for FE/BE label configuration
+            const settings = await db.getWorkspaceSettings(workspace.slackTeamId);
             const { inferStack } = await import('../utils/stackInference');
             const stackRules = repoMapping?.stackRules || [];
-            const stack = inferStack(pr.labels ?? [], prFiles, stackRules);
+            const stack = inferStack(
+              pr.labels ?? [], 
+              prFiles, 
+              stackRules,
+              settings?.feLabels,
+              settings?.beLabels
+            );
             
             // Use PR files for size calculation if available, otherwise use payload
             const prMetadata = prFiles.length > 0

@@ -201,9 +201,23 @@ export class PostgresDb {
         required_reviewers INTEGER DEFAULT 2,
         reminder_hours INTEGER DEFAULT 24,
         reminder_escalation_hours INTEGER DEFAULT 48,
+        fe_labels VARCHAR(500),
+        be_labels VARCHAR(500),
         created_at TIMESTAMP DEFAULT NOW(),
         updated_at TIMESTAMP DEFAULT NOW()
       );
+      
+      -- Migration: Add fe_labels and be_labels columns if they don't exist
+      DO $$ 
+      BEGIN
+        IF NOT EXISTS (
+          SELECT 1 FROM information_schema.columns 
+          WHERE table_name = 'workspace_settings' AND column_name = 'fe_labels'
+        ) THEN
+          ALTER TABLE workspace_settings ADD COLUMN fe_labels VARCHAR(500);
+          ALTER TABLE workspace_settings ADD COLUMN be_labels VARCHAR(500);
+        END IF;
+      END $$;
 
       -- Jira connections table
       CREATE TABLE IF NOT EXISTS jira_connections (
@@ -636,8 +650,8 @@ export class PostgresDb {
 
   async upsertWorkspaceSettings(settings: any): Promise<void> {
     await this.pool.query(
-      `INSERT INTO workspace_settings (slack_team_id, default_channel_id, github_installation_id, jira_base_url, jira_email, jira_api_token_encrypted, required_reviewers, reminder_hours, reminder_escalation_hours, created_at, updated_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW(), NOW())
+      `INSERT INTO workspace_settings (slack_team_id, default_channel_id, github_installation_id, jira_base_url, jira_email, jira_api_token_encrypted, required_reviewers, reminder_hours, reminder_escalation_hours, fe_labels, be_labels, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, NOW(), NOW())
        ON CONFLICT (slack_team_id) DO UPDATE SET
          default_channel_id = EXCLUDED.default_channel_id,
          github_installation_id = EXCLUDED.github_installation_id,
@@ -647,6 +661,8 @@ export class PostgresDb {
          required_reviewers = EXCLUDED.required_reviewers,
          reminder_hours = EXCLUDED.reminder_hours,
          reminder_escalation_hours = EXCLUDED.reminder_escalation_hours,
+         fe_labels = EXCLUDED.fe_labels,
+         be_labels = EXCLUDED.be_labels,
          updated_at = NOW()`,
       [
         settings.slackTeamId,
@@ -657,7 +673,9 @@ export class PostgresDb {
         settings.jiraApiTokenEncrypted || null,
         settings.requiredReviewers || 2,
         settings.reminderHours || 24,
-        settings.reminderEscalationHours || 48
+        settings.reminderEscalationHours || 48,
+        settings.feLabels || null,
+        settings.beLabels || null
       ]
     );
   }
@@ -673,6 +691,8 @@ export class PostgresDb {
       requiredReviewers: row.required_reviewers,
       reminderHours: row.reminder_hours,
       reminderEscalationHours: row.reminder_escalation_hours,
+      feLabels: row.fe_labels,
+      beLabels: row.be_labels,
       createdAt: row.created_at ? new Date(row.created_at).getTime() : Date.now(),
       updatedAt: row.updated_at ? new Date(row.updated_at).getTime() : Date.now()
     };

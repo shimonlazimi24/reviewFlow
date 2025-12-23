@@ -74,6 +74,8 @@ export interface WorkspaceSettings {
   requiredReviewers?: number;
   reminderHours?: number;
   reminderEscalationHours?: number;
+  feLabels?: string; // Comma-separated FE labels (e.g., "frontend,fe,ui")
+  beLabels?: string; // Comma-separated BE labels (e.g., "backend,be,api")
   createdAt: number;
   updatedAt: number;
 }

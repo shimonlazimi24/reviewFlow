@@ -1795,6 +1795,68 @@ export function registerSlackHandlers(app: App) {
     }
   });
 
+  // Helper function to validate wizard step prerequisites
+  async function validateWizardStepPrerequisites(
+    workspaceId: string,
+    step: 'channel' | 'github' | 'jira' | 'teams' | 'repos' | 'members'
+  ): Promise<{ valid: boolean; missingSteps: string[] }> {
+    const workspace = await db.getWorkspace(workspaceId);
+    if (!workspace) {
+      throw new Error('Workspace not found');
+    }
+
+    const missingSteps: string[] = [];
+
+    // Step order: Setup Destination -> Channel -> GitHub -> (Jira optional) -> Teams -> Repos -> Members
+    if (step === 'channel') {
+      // Channel requires nothing (first step after setup destination)
+      return { valid: true, missingSteps: [] };
+    }
+
+    if (step === 'github') {
+      // GitHub requires channel
+      const settings = await db.getWorkspaceSettings(workspace.slackTeamId);
+      if (!settings?.defaultChannelId && !workspace.defaultChannelId) {
+        missingSteps.push('Notification Channel (Step A2)');
+      }
+    }
+
+    if (step === 'jira') {
+      // Jira requires GitHub (optional step, but should come after GitHub)
+      if (!workspace.githubInstallationId) {
+        missingSteps.push('GitHub Connection (Step B)');
+      }
+    }
+
+    if (step === 'teams') {
+      // Teams requires GitHub
+      if (!workspace.githubInstallationId) {
+        missingSteps.push('GitHub Connection (Step B)');
+      }
+    }
+
+    if (step === 'repos') {
+      // Repos requires Teams and GitHub
+      if (!workspace.githubInstallationId) {
+        missingSteps.push('GitHub Connection (Step B)');
+      }
+      const teams = await db.listTeams(workspaceId);
+      if (teams.length === 0) {
+        missingSteps.push('Create Teams (Step D)');
+      }
+    }
+
+    if (step === 'members') {
+      // Members requires Teams
+      const teams = await db.listTeams(workspaceId);
+      if (teams.length === 0) {
+        missingSteps.push('Create Teams (Step D)');
+      }
+    }
+
+    return { valid: missingSteps.length === 0, missingSteps };
+  }
+
   // Step A2: Channel Selection
   app.action('wizard_step_channel', async ({ ack, body, client }) => {
     await ack();
@@ -1807,6 +1869,15 @@ export function registerSlackHandlers(app: App) {
 
     try {
       await requireWorkspaceAdmin(userId, slackTeamId, client);
+      const validation = await validateWizardStepPrerequisites(workspaceId, 'channel');
+      if (!validation.valid) {
+        await client.chat.postEphemeral({
+          channel: userId,
+          user: userId,
+          text: `❌ *Cannot proceed*\n\nPlease complete these steps first:\n${validation.missingSteps.map(s => `• ${s}`).join('\n')}`
+        });
+        return;
+      }
       const modal = buildChannelSelectionModal(workspaceId);
       await client.views.open({
         trigger_id: actionBody.trigger_id,
@@ -1899,6 +1970,15 @@ export function registerSlackHandlers(app: App) {
 
     try {
       await requireWorkspaceAdmin(userId, slackTeamId, client);
+      const validation = await validateWizardStepPrerequisites(workspaceId, 'github');
+      if (!validation.valid) {
+        await client.chat.postEphemeral({
+          channel: userId,
+          user: userId,
+          text: `❌ *Cannot proceed*\n\nPlease complete these steps first:\n${validation.missingSteps.map(s => `• ${s}`).join('\n')}`
+        });
+        return;
+      }
       const modal = buildGitHubConnectionModal(workspaceId);
       await client.views.open({
         trigger_id: actionBody.trigger_id,
@@ -1926,6 +2006,15 @@ export function registerSlackHandlers(app: App) {
 
     try {
       await requireWorkspaceAdmin(userId, slackTeamId, client);
+      const validation = await validateWizardStepPrerequisites(workspaceId, 'jira');
+      if (!validation.valid) {
+        await client.chat.postEphemeral({
+          channel: userId,
+          user: userId,
+          text: `❌ *Cannot proceed*\n\nPlease complete these steps first:\n${validation.missingSteps.map(s => `• ${s}`).join('\n')}`
+        });
+        return;
+      }
       const context = await loadWorkspaceContext(slackTeamId);
       const isProRequired = !hasFeature(context, 'jiraIntegration');
       const modal = buildJiraConnectionModal(workspaceId, isProRequired);
@@ -2023,6 +2112,15 @@ export function registerSlackHandlers(app: App) {
 
     try {
       await requireWorkspaceAdmin(userId, slackTeamId, client);
+      const validation = await validateWizardStepPrerequisites(workspaceId, 'members');
+      if (!validation.valid) {
+        await client.chat.postEphemeral({
+          channel: userId,
+          user: userId,
+          text: `❌ *Cannot proceed*\n\nPlease complete these steps first:\n${validation.missingSteps.map(s => `• ${s}`).join('\n')}`
+        });
+        return;
+      }
       const teams = await db.listTeams(workspaceId);
       const modal = buildAddMembersModal(workspaceId, teams);
       await client.views.open({
@@ -2121,6 +2219,15 @@ export function registerSlackHandlers(app: App) {
 
     try {
       await requireWorkspaceAdmin(userId, slackTeamId, client);
+      const validation = await validateWizardStepPrerequisites(workspaceId, 'teams');
+      if (!validation.valid) {
+        await client.chat.postEphemeral({
+          channel: userId,
+          user: userId,
+          text: `❌ *Cannot proceed*\n\nPlease complete these steps first:\n${validation.missingSteps.map(s => `• ${s}`).join('\n')}`
+        });
+        return;
+      }
       // Use simple team creation via command or modal
       await client.chat.postEphemeral({
         channel: userId,
@@ -2149,6 +2256,15 @@ export function registerSlackHandlers(app: App) {
 
     try {
       await requireWorkspaceAdmin(userId, slackTeamId, client);
+      const validation = await validateWizardStepPrerequisites(workspaceId, 'repos');
+      if (!validation.valid) {
+        await client.chat.postEphemeral({
+          channel: userId,
+          user: userId,
+          text: `❌ *Cannot proceed*\n\nPlease complete these steps first:\n${validation.missingSteps.map(s => `• ${s}`).join('\n')}`
+        });
+        return;
+      }
       const teams = await db.listTeams(workspaceId);
       if (teams.length === 0) {
         await client.chat.postEphemeral({

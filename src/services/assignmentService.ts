@@ -5,13 +5,34 @@ export interface GitHubLabel {
   [key: string]: any;
 }
 
-export function inferStackFromLabels(labels: GitHubLabel[] | any[]): Stack {
+export function inferStackFromLabels(
+  labels: GitHubLabel[] | any[],
+  feLabels?: string,
+  beLabels?: string
+): Stack {
   const names = (labels ?? []).map(l => String(l?.name ?? '').toLowerCase());
-  const hasFE = names.includes('frontend') || names.includes('fe');
-  const hasBE = names.includes('backend') || names.includes('be');
-  if (hasFE && hasBE) return 'MIXED';
-  if (hasFE) return 'FE';
-  if (hasBE) return 'BE';
+  
+  // Parse configured labels
+  const configuredFELabels = feLabels 
+    ? feLabels.split(',').map(l => l.trim().toLowerCase()).filter(Boolean)
+    : [];
+  const configuredBELabels = beLabels 
+    ? beLabels.split(',').map(l => l.trim().toLowerCase()).filter(Boolean)
+    : [];
+  
+  // Check for FE labels (configured or defaults)
+  const feLabelMatches = configuredFELabels.length > 0
+    ? configuredFELabels.some(label => names.includes(label))
+    : names.some(name => name.includes('frontend') || name === 'fe' || name.includes('ui') || name.includes('client'));
+  
+  // Check for BE labels (configured or defaults)
+  const beLabelMatches = configuredBELabels.length > 0
+    ? configuredBELabels.some(label => names.includes(label))
+    : names.some(name => name.includes('backend') || name === 'be' || name.includes('api') || name.includes('server'));
+  
+  if (feLabelMatches && beLabelMatches) return 'MIXED';
+  if (feLabelMatches) return 'FE';
+  if (beLabelMatches) return 'BE';
   return 'MIXED'; // default
 }
 

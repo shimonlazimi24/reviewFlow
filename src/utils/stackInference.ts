@@ -73,10 +73,12 @@ export function inferStackFromPaths(
 export function inferStack(
   labels: GitHubLabel[] | any[],
   files: Array<{ filename: string }> = [],
-  stackRules: StackRule[] = []
+  stackRules: StackRule[] = [],
+  feLabels?: string,
+  beLabels?: string
 ): Stack {
-  // Try labels first
-  const fromLabels = inferStackFromLabels(labels);
+  // Try labels first (with configured FE/BE labels)
+  const fromLabels = inferStackFromLabels(labels, feLabels, beLabels);
   if (fromLabels !== 'MIXED' || labels.length === 0) {
     return fromLabels;
   }
