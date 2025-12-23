@@ -137,23 +137,68 @@ export function registerGitHubConnectRoutes(app: express.Express) {
     try {
       const { installation_id, setup_action, state } = req.query;
       
+      logger.info('GitHub installation callback received', { 
+        installation_id, 
+        setup_action, 
+        state,
+        hasState: !!state 
+      });
+      
       if (!installation_id) {
         return res.status(400).send('Missing installation_id');
       }
 
-      // Extract workspace_id from state (if provided)
-      const workspaceId = state as string | undefined;
+      const installationId = String(installation_id);
+      let workspace: Workspace | undefined;
 
-      if (workspaceId) {
+      // Try to find workspace by state (workspace_id)
+      if (state) {
+        workspace = await db.getWorkspace(state as string);
+        // If not found by ID, try by slackTeamId
+        if (!workspace) {
+          const slackTeamId = (state as string).replace(/^workspace_/, '');
+          if (slackTeamId && slackTeamId !== state) {
+            workspace = await db.getWorkspaceBySlackTeamId(slackTeamId);
+          }
+        }
+      }
+
+      // If still not found, try to find any workspace without GitHub connection
+      // (for cases where state wasn't passed)
+      if (!workspace) {
+        logger.warn('Workspace not found from state, searching for workspace without GitHub', { state });
+        const allWorkspaces = await db.listWorkspaces();
+        // Find workspace that doesn't have GitHub connected yet (most recent one)
+        workspace = allWorkspaces
+          .filter((w: any) => !w.githubInstallationId)
+          .sort((a: any, b: any) => b.createdAt - a.createdAt)[0];
+      }
+
+      if (workspace) {
         // Update workspace with GitHub installation ID
-        const workspace = await db.getWorkspace(workspaceId);
-        if (workspace) {
-          await db.updateWorkspace(workspace.id, {
-            githubInstallationId: String(installation_id),
+        await db.updateWorkspace(workspace.id, {
+          githubInstallationId: installationId,
+          githubAccount: req.query.account?.toString() || undefined,
+          updatedAt: Date.now()
+        });
+
+        // Also update workspace settings
+        const settings = await db.getWorkspaceSettings(workspace.slackTeamId);
+        if (settings) {
+          await db.upsertWorkspaceSettings({
+            ...settings,
+            githubInstallationId: installationId,
             updatedAt: Date.now()
           });
-          logger.info('GitHub installation connected', { workspaceId, installationId: installation_id });
         }
+
+        logger.info('GitHub installation connected to workspace', { 
+          workspaceId: workspace.id, 
+          slackTeamId: workspace.slackTeamId,
+          installationId 
+        });
+      } else {
+        logger.warn('Could not find workspace to link GitHub installation', { installationId, state });
       }
 
       res.send(`

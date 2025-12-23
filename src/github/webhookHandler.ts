@@ -57,18 +57,31 @@ async function handleInstallationWebhook(req: Request, res: Response, slackApp: 
     let workspace = await db.getWorkspaceByGitHubInstallation(installationId);
     
     if (!workspace && action === 'created') {
-      // New installation - we need to find workspace by connect token
-      // For now, log and require manual mapping
-      logger.info('New GitHub installation detected', {
+      // New installation - try to find workspace without GitHub connection
+      // Link to the most recent workspace that doesn't have GitHub yet
+      logger.info('New GitHub installation detected, searching for workspace to link', {
         installationId,
         accountLogin,
         action
       });
       
-      // TODO: Implement connect token flow
-      // For now, workspace will be linked when user connects via /connect/github
-      res.status(200).json({ message: 'Installation received, awaiting workspace link' });
-      return;
+      const allWorkspaces = await db.listWorkspaces();
+      const workspaceWithoutGitHub = allWorkspaces
+        .filter((w: any) => !w.githubInstallationId)
+        .sort((a: any, b: any) => b.createdAt - a.createdAt)[0];
+      
+      if (workspaceWithoutGitHub) {
+        workspace = workspaceWithoutGitHub;
+        logger.info('Linking new installation to workspace', {
+          workspaceId: workspace.id,
+          slackTeamId: workspace.slackTeamId,
+          installationId
+        });
+      } else {
+        logger.warn('New installation but no workspace found to link', { installationId });
+        res.status(200).json({ message: 'Installation received, but no workspace found to link' });
+        return;
+      }
     }
 
     if (workspace) {
