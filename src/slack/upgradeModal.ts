@@ -10,7 +10,7 @@ export function buildUpgradeModal(checkoutUrl: string): View {
     callback_id: 'upgrade_modal',
     title: {
       type: 'plain_text',
-      text: '🚀 Upgrade to Pro' // Max 25 chars for Slack
+      text: 'Upgrade to Pro' // Max 25 chars for Slack (no emoji to avoid counting issues)
     },
     close: {
       type: 'plain_text',
