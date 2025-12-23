@@ -467,6 +467,8 @@ export function registerSimpleHomeHandlers(app: App) {
     try {
       // Get or create workspace
       let workspace = await db.getWorkspaceBySlackTeamId(teamId);
+      logger.info('Workspace lookup for GitHub', { teamId, found: !!workspace });
+      
       if (!workspace) {
         // Create workspace if it doesn't exist
         const workspaceId = `workspace_${teamId}`;
@@ -486,20 +488,34 @@ export function registerSimpleHomeHandlers(app: App) {
       }
 
       // Import and use existing GitHub connection modal
+      logger.info('Building GitHub connection modal', { workspaceId: workspace.id });
       const { buildGitHubConnectionModal } = await import('./onboardingWizard');
       const modal = buildGitHubConnectionModal(workspace.id);
       
+      logger.info('Opening GitHub connection modal', { triggerId: triggerId?.substring(0, 10) + '...' });
       await client.views.open({
         trigger_id: triggerId,
         view: modal
       });
+      
+      logger.info('GitHub connection modal opened successfully');
     } catch (error: any) {
-      logger.error('Error opening GitHub connection modal', error);
-      await client.chat.postEphemeral({
-        channel: userId,
-        user: userId,
-        text: `❌ Failed to open GitHub connection: ${error.message}`
+      logger.error('Error opening GitHub connection modal', error, {
+        teamId,
+        userId,
+        hasTriggerId: !!triggerId,
+        errorMessage: error.message,
+        errorStack: error.stack
       });
+      try {
+        await client.chat.postEphemeral({
+          channel: userId,
+          user: userId,
+          text: `❌ Failed to open GitHub connection: ${error.message || 'Unknown error'}`
+        });
+      } catch (err: any) {
+        logger.error('Failed to send error message to user', err);
+      }
     }
   });
 
@@ -562,6 +578,8 @@ export function registerSimpleHomeHandlers(app: App) {
     try {
       // Get or create workspace
       let workspace = await db.getWorkspaceBySlackTeamId(teamId);
+      logger.info('Workspace lookup for Jira', { teamId, found: !!workspace });
+      
       if (!workspace) {
         // Create workspace if it doesn't exist
         const workspaceId = `workspace_${teamId}`;
@@ -581,25 +599,41 @@ export function registerSimpleHomeHandlers(app: App) {
       }
 
       // Check if Pro plan is required
+      logger.info('Loading workspace context for Jira', { teamId });
       const { loadWorkspaceContext, hasFeature } = await import('../services/workspaceContext');
       const context = await loadWorkspaceContext(teamId);
       const isProRequired = !hasFeature(context, 'jiraIntegration');
+      logger.info('Jira Pro requirement check', { isProRequired, plan: context.plan });
 
       // Import and use existing Jira connection modal
+      logger.info('Building Jira connection modal', { workspaceId: workspace.id, isProRequired });
       const { buildJiraConnectionModal } = await import('./onboardingWizard');
       const modal = buildJiraConnectionModal(workspace.id, isProRequired);
       
+      logger.info('Opening Jira connection modal', { triggerId: triggerId?.substring(0, 10) + '...' });
       await client.views.open({
         trigger_id: triggerId,
         view: modal
       });
+      
+      logger.info('Jira connection modal opened successfully');
     } catch (error: any) {
-      logger.error('Error opening Jira connection modal', error);
-      await client.chat.postEphemeral({
-        channel: userId,
-        user: userId,
-        text: `❌ Failed to open Jira connection: ${error.message}`
+      logger.error('Error opening Jira connection modal', error, {
+        teamId,
+        userId,
+        hasTriggerId: !!triggerId,
+        errorMessage: error.message,
+        errorStack: error.stack
       });
+      try {
+        await client.chat.postEphemeral({
+          channel: userId,
+          user: userId,
+          text: `❌ Failed to open Jira connection: ${error.message || 'Unknown error'}`
+        });
+      } catch (err: any) {
+        logger.error('Failed to send error message to user', err);
+      }
     }
   });
 
@@ -646,6 +680,8 @@ export function registerSimpleHomeHandlers(app: App) {
     try {
       // Get or create workspace
       let workspace = await db.getWorkspaceBySlackTeamId(teamId);
+      logger.info('Workspace lookup for billing', { teamId, found: !!workspace });
+      
       if (!workspace) {
         // Create workspace if it doesn't exist
         const workspaceId = `workspace_${teamId}`;
@@ -664,6 +700,7 @@ export function registerSimpleHomeHandlers(app: App) {
         logger.info('Created workspace for billing', { workspaceId, teamId });
       }
 
+      logger.info('Creating billing checkout/portal', { workspaceId: workspace.id, plan: workspace.plan });
       const { PolarService } = await import('../services/polarService');
       const polar = new PolarService();
 
