@@ -51,29 +51,52 @@ export class PolarService {
       const priceId = env.POLAR_PRO_PRICE_ID;
 
       // Polar API: Create checkout link
-      // Using product_id or price_id depending on what's configured
+      // Polar API expects either product_id OR price_id, not both
       const payload: any = {
-        product_id: productId,
         success_url: POLAR_SUCCESS_URL,
+        cancel_url: POLAR_CANCEL_URL,
         metadata: {
           slack_team_id: params.slackTeamId,
           slack_user_id: params.slackUserId
         }
       };
 
+      // Use price_id if available, otherwise product_id
       if (priceId) {
         payload.price_id = priceId;
+      } else if (productId) {
+        payload.product_id = productId;
+      } else {
+        throw new Error('Either POLAR_PRO_PRODUCT_ID or POLAR_PRO_PRICE_ID must be configured');
       }
 
+      logger.info('Creating Polar checkout', { 
+        hasProductId: !!productId, 
+        hasPriceId: !!priceId,
+        productId: productId?.substring(0, 10) + '...',
+        successUrl: POLAR_SUCCESS_URL
+      });
+
       const response = await this.client.post('/v1/checkouts', payload);
+
+      logger.info('Polar checkout created successfully', { 
+        checkoutId: response.data?.id,
+        hasUrl: !!response.data?.url 
+      });
 
       return {
         id: response.data.id,
         url: response.data.url || response.data.checkout_url
       };
     } catch (error: any) {
-      logger.error('Failed to create Polar checkout session', error);
-      throw new Error(`Failed to create checkout session: ${error.message}`);
+      logger.error('Failed to create Polar checkout session', {
+        error: error.message,
+        response: error.response?.data,
+        status: error.response?.status,
+        productId: env.POLAR_PRO_PRODUCT_ID?.substring(0, 10) + '...',
+        priceId: env.POLAR_PRO_PRICE_ID?.substring(0, 10) + '...'
+      });
+      throw new Error(`Failed to create checkout session: ${error.response?.data?.detail || error.message}`);
     }
   }
 
