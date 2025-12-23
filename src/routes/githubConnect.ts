@@ -197,9 +197,26 @@ export function registerGitHubConnectRoutes(app: express.Express) {
           slackTeamId: workspace.slackTeamId,
           installationId 
         });
+
+        // Try to refresh Home Tab for all users in the workspace (if Slack App is available)
+        // Note: This requires Slack App instance, which we don't have here
+        // Users will need to manually refresh the Home Tab
       } else {
         logger.warn('Could not find workspace to link GitHub installation', { installationId, state });
       }
+
+      const successMessage = workspace
+        ? `<div class="success">
+            <h1>✅ GitHub Connected Successfully!</h1>
+            <p>ReviewFlow is now connected to your GitHub repositories.</p>
+            <p><strong>Installation ID:</strong> ${installationId}</p>
+            <p>Return to Slack and refresh the Home Tab to see the updated status.</p>
+          </div>`
+        : `<div class="warning">
+            <h1>⚠️ Installation Received</h1>
+            <p>GitHub App was installed, but we couldn't automatically link it to your workspace.</p>
+            <p>Please return to Slack and try connecting again, or contact support.</p>
+          </div>`;
 
       res.send(`
         <html>
@@ -209,15 +226,14 @@ export function registerGitHubConnectRoutes(app: express.Express) {
               body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 600px; margin: 50px auto; padding: 20px; text-align: center; }
               h1 { color: #4CAF50; }
               .success { background: #d4edda; padding: 20px; border-radius: 5px; margin: 20px 0; }
+              .warning { background: #fff3cd; padding: 20px; border-radius: 5px; margin: 20px 0; }
+              .warning h1 { color: #856404; }
             </style>
           </head>
           <body>
-            <div class="success">
-              <h1>✅ GitHub Connected Successfully!</h1>
-              <p>ReviewFlow is now connected to your GitHub repositories.</p>
-              <p>Return to Slack to continue setup.</p>
-            </div>
+            ${successMessage}
             <p><a href="slack://open">Return to Slack</a></p>
+            <p><small>💡 Tip: Refresh the ReviewFlow Home Tab to see the updated connection status.</small></p>
           </body>
         </html>
       `);
