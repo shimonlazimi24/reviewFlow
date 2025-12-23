@@ -8,11 +8,15 @@ Your ReviewFlow bot needs the following scopes to work properly:
 Go to: https://api.slack.com/apps → Your App → OAuth & Permissions
 
 **Required Scopes:**
+- `app_home` - **REQUIRED** - Enable Home Tab (publish custom home views)
 - `chat:write` - Post messages to channels
+- `chat:write.public` - Post to public channels
 - `commands` - Use slash commands
 - `actions:read` - Read button clicks and interactions
 - `users:read` - Read user information
-- `channels:read` - Read channel information (optional but recommended)
+- `channels:read` - Read channel information
+- `im:read` - Read direct messages
+- `im:write` - Send direct messages
 
 ### App-Level Token (if using Socket Mode - optional)
 If you want to use Socket Mode instead of webhooks:
@@ -34,11 +38,15 @@ If you want to use Socket Mode instead of webhooks:
 1. Go to **OAuth & Permissions** in the left sidebar
 2. Scroll to **Scopes** → **Bot Token Scopes**
 3. Add these scopes:
+   - `app_home` ⭐ **REQUIRED for Home Tab**
    - `chat:write`
+   - `chat:write.public`
    - `commands`
    - `actions:read`
    - `users:read`
    - `channels:read`
+   - `im:read`
+   - `im:write`
 
 ### 3. Install App to Workspace
 

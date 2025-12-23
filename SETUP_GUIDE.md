@@ -203,16 +203,40 @@ This guide walks you through all the manual configuration steps needed in Slack,
 
 ## 2. 🐙 GitHub Configuration
 
-### Step 2.1: Create Webhook Secret
+**Important:** ReviewFlow supports two methods for GitHub integration. The **GitHub App method (recommended)** is automatic and doesn't require manual webhook setup per repository.
+
+### Option A: GitHub App Installation (Recommended - Automatic) ✅
+
+**This is the easiest method - each workspace admin connects GitHub once, and webhooks are automatic.**
+
+1. **In Slack:** Open ReviewFlow Home Tab → Click **"Connect GitHub"** or **"Start Setup"**
+2. **Click "Install GitHub App"** button
+3. **On GitHub:** Select which repositories to connect
+4. **Done!** Webhooks are automatically configured by GitHub
+
+**Benefits:**
+- ✅ No manual webhook setup needed
+- ✅ Works for all repositories you select
+- ✅ Automatic per-workspace connection
+- ✅ More secure (GitHub handles authentication)
+
+**Note:** This requires a GitHub App to be created first (see DEPLOYMENT.md for GitHub App setup).
+
+### Option B: Manual Webhook Setup (Legacy - Per Repository)
+
+**⚠️ Only use this if you can't use GitHub App. Each repository needs manual setup.**
+
+#### Step 2.1: Create Webhook Secret
 
 1. Generate a random secret (for security):
    ```bash
    openssl rand -hex 32
    ```
-   - Or use any random string
    - Save this as `GITHUB_WEBHOOK_SECRET` in your environment variables
 
-### Step 2.2: Add Webhook to Repository
+#### Step 2.2: Add Webhook to Each Repository
+
+**⚠️ Each team/admin needs to do this for EACH repository they want to monitor.**
 
 1. Go to your GitHub repository
 2. Click **"Settings"** → **"Webhooks"** → **"Add webhook"**
@@ -223,6 +247,8 @@ This guide walks you through all the manual configuration steps needed in Slack,
 7. Check only: **"Pull requests"**
 8. **Active**: ✅ Checked
 9. Click **"Add webhook"**
+
+**Repeat for each repository** you want ReviewFlow to monitor.
 
 ### Step 2.2: Test Webhook
 
