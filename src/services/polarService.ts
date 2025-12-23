@@ -52,19 +52,29 @@ export class PolarService {
 
       // Polar API: Create checkout link
       // Polar API expects either product_id OR price_id, not both
+      // Also need to check if product_id needs to be in a specific format
       const payload: any = {
         success_url: POLAR_SUCCESS_URL,
-        cancel_url: POLAR_CANCEL_URL,
-        metadata: {
-          slack_team_id: params.slackTeamId,
-          slack_user_id: params.slackUserId
-        }
+        cancel_url: POLAR_CANCEL_URL
       };
 
+      // Add metadata if provided
+      if (params.slackTeamId || params.slackUserId) {
+        payload.metadata = {};
+        if (params.slackTeamId) {
+          payload.metadata.slack_team_id = params.slackTeamId;
+        }
+        if (params.slackUserId) {
+          payload.metadata.slack_user_id = params.slackUserId;
+        }
+      }
+
       // Use price_id if available, otherwise product_id
+      // Polar API: product_id should be the UUID from the product
       if (priceId) {
         payload.price_id = priceId;
       } else if (productId) {
+        // Product ID should be the UUID (not prefixed with prod_)
         payload.product_id = productId;
       } else {
         throw new Error('Either POLAR_PRO_PRODUCT_ID or POLAR_PRO_PRICE_ID must be configured');
@@ -73,11 +83,30 @@ export class PolarService {
       logger.info('Creating Polar checkout', { 
         hasProductId: !!productId, 
         hasPriceId: !!priceId,
-        productId: productId?.substring(0, 10) + '...',
-        successUrl: POLAR_SUCCESS_URL
+        productId: productId ? (productId.length > 20 ? productId.substring(0, 20) + '...' : productId) : 'none',
+        priceId: priceId ? (priceId.length > 20 ? priceId.substring(0, 20) + '...' : priceId) : 'none',
+        successUrl: POLAR_SUCCESS_URL,
+        cancelUrl: POLAR_CANCEL_URL,
+        payloadKeys: Object.keys(payload)
       });
 
-      const response = await this.client.post('/v1/checkouts', payload);
+      // Polar API endpoint might be different - try both
+      let response;
+      try {
+        response = await this.client.post('/v1/checkouts', payload);
+      } catch (apiError: any) {
+        // If v1/checkouts fails, try alternative endpoint
+        if (apiError.response?.status === 404 || apiError.response?.status === 422) {
+          logger.warn('v1/checkouts failed, trying alternative endpoint', { 
+            status: apiError.response?.status,
+            error: apiError.response?.data 
+          });
+          // Try without /v1 prefix or different endpoint
+          response = await this.client.post('/checkouts', payload);
+        } else {
+          throw apiError;
+        }
+      }
 
       logger.info('Polar checkout created successfully', { 
         checkoutId: response.data?.id,
@@ -89,14 +118,33 @@ export class PolarService {
         url: response.data.url || response.data.checkout_url
       };
     } catch (error: any) {
+      const errorDetails = error.response?.data || {};
+      const errorMessage = errorDetails.detail || errorDetails.message || error.message;
+      
       logger.error('Failed to create Polar checkout session', {
         error: error.message,
-        response: error.response?.data,
+        response: errorDetails,
         status: error.response?.status,
-        productId: env.POLAR_PRO_PRODUCT_ID?.substring(0, 10) + '...',
-        priceId: env.POLAR_PRO_PRICE_ID?.substring(0, 10) + '...'
+        statusText: error.response?.statusText,
+        productId: env.POLAR_PRO_PRODUCT_ID ? (env.POLAR_PRO_PRODUCT_ID.length > 20 ? env.POLAR_PRO_PRODUCT_ID.substring(0, 20) + '...' : env.POLAR_PRO_PRODUCT_ID) : 'none',
+        priceId: env.POLAR_PRO_PRICE_ID ? (env.POLAR_PRO_PRICE_ID.length > 20 ? env.POLAR_PRO_PRICE_ID.substring(0, 20) + '...' : env.POLAR_PRO_PRICE_ID) : 'none',
+        payload: {
+          hasProductId: !!payload.product_id,
+          hasPriceId: !!payload.price_id,
+          hasSuccessUrl: !!payload.success_url,
+          hasCancelUrl: !!payload.cancel_url,
+          hasMetadata: !!payload.metadata
+        },
+        fullPayload: JSON.stringify(payload, null, 2)
       });
-      throw new Error(`Failed to create checkout session: ${error.response?.data?.detail || error.message}`);
+      
+      // Provide more helpful error message
+      let userMessage = `Failed to create checkout session: ${errorMessage}`;
+      if (error.response?.status === 422 || errorMessage.includes('invalid')) {
+        userMessage += '\n\nPossible causes:\n• Product ID format is incorrect\n• Product doesn\'t exist in Polar\n• Missing required fields\n\nCheck your POLAR_PRO_PRODUCT_ID in Polar dashboard.';
+      }
+      
+      throw new Error(userMessage);
     }
   }
 
