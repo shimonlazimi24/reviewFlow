@@ -465,14 +465,24 @@ export function registerSimpleHomeHandlers(app: App) {
     }
 
     try {
-      const workspace = await db.getWorkspaceBySlackTeamId(teamId);
+      // Get or create workspace
+      let workspace = await db.getWorkspaceBySlackTeamId(teamId);
       if (!workspace) {
-        await client.chat.postEphemeral({
-          channel: userId,
-          user: userId,
-          text: '❌ Workspace not found. Please try again.'
-        });
-        return;
+        // Create workspace if it doesn't exist
+        const workspaceId = `workspace_${teamId}`;
+        workspace = {
+          id: workspaceId,
+          slackTeamId: teamId,
+          plan: 'free',
+          subscriptionStatus: 'active',
+          setupComplete: false,
+          setupStep: 'channel',
+          goLiveEnabled: false,
+          createdAt: Date.now(),
+          updatedAt: Date.now()
+        };
+        await db.addWorkspace(workspace);
+        logger.info('Created workspace for GitHub connection', { workspaceId, teamId });
       }
 
       // Import and use existing GitHub connection modal
@@ -550,14 +560,24 @@ export function registerSimpleHomeHandlers(app: App) {
     }
 
     try {
-      const workspace = await db.getWorkspaceBySlackTeamId(teamId);
+      // Get or create workspace
+      let workspace = await db.getWorkspaceBySlackTeamId(teamId);
       if (!workspace) {
-        await client.chat.postEphemeral({
-          channel: userId,
-          user: userId,
-          text: '❌ Workspace not found. Please try again.'
-        });
-        return;
+        // Create workspace if it doesn't exist
+        const workspaceId = `workspace_${teamId}`;
+        workspace = {
+          id: workspaceId,
+          slackTeamId: teamId,
+          plan: 'free',
+          subscriptionStatus: 'active',
+          setupComplete: false,
+          setupStep: 'channel',
+          goLiveEnabled: false,
+          createdAt: Date.now(),
+          updatedAt: Date.now()
+        };
+        await db.addWorkspace(workspace);
+        logger.info('Created workspace for Jira connection', { workspaceId, teamId });
       }
 
       // Check if Pro plan is required
@@ -624,14 +644,24 @@ export function registerSimpleHomeHandlers(app: App) {
     }
 
     try {
-      const workspace = await db.getWorkspaceBySlackTeamId(teamId);
+      // Get or create workspace
+      let workspace = await db.getWorkspaceBySlackTeamId(teamId);
       if (!workspace) {
-        await client.chat.postEphemeral({
-          channel: userId,
-          user: userId,
-          text: '❌ Workspace not found. Please try again.'
-        });
-        return;
+        // Create workspace if it doesn't exist
+        const workspaceId = `workspace_${teamId}`;
+        workspace = {
+          id: workspaceId,
+          slackTeamId: teamId,
+          plan: 'free',
+          subscriptionStatus: 'active',
+          setupComplete: false,
+          setupStep: 'channel',
+          goLiveEnabled: false,
+          createdAt: Date.now(),
+          updatedAt: Date.now()
+        };
+        await db.addWorkspace(workspace);
+        logger.info('Created workspace for billing', { workspaceId, teamId });
       }
 
       const { PolarService } = await import('../services/polarService');
@@ -720,14 +750,24 @@ export function registerSimpleHomeHandlers(app: App) {
     }
 
     try {
-      const workspace = await db.getWorkspaceBySlackTeamId(teamId);
+      // Get or create workspace
+      let workspace = await db.getWorkspaceBySlackTeamId(teamId);
       if (!workspace) {
-        await client.chat.postEphemeral({
-          channel: userId,
-          user: userId,
-          text: '❌ Workspace not found. Please try again.'
-        });
-        return;
+        // Create workspace if it doesn't exist
+        const workspaceId = `workspace_${teamId}`;
+        workspace = {
+          id: workspaceId,
+          slackTeamId: teamId,
+          plan: 'free',
+          subscriptionStatus: 'active',
+          setupComplete: false,
+          setupStep: 'channel',
+          goLiveEnabled: false,
+          createdAt: Date.now(),
+          updatedAt: Date.now()
+        };
+        await db.addWorkspace(workspace);
+        logger.info('Created workspace for full settings', { workspaceId, teamId });
       }
 
       // Import and use comprehensive settings modal
