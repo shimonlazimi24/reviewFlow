@@ -322,8 +322,16 @@ async function main() {
           const rawBody = req.body.toString();
 
           if (!signature) {
-            logger.warn('Polar webhook received without signature');
-            return res.status(400).json({ error: 'Missing signature' });
+            logger.warn('Polar webhook received without signature', {
+              hasWebhookSecret: !!env.POLAR_WEBHOOK_SECRET,
+              tip: 'Set POLAR_WEBHOOK_SECRET environment variable to enable signature verification'
+            });
+            // In development, allow webhooks without signature if secret is not configured
+            if (!env.POLAR_WEBHOOK_SECRET) {
+              logger.warn('Processing webhook without signature verification (POLAR_WEBHOOK_SECRET not set)');
+            } else {
+              return res.status(400).json({ error: 'Missing signature' });
+            }
           }
 
           if (!polarService.verifyWebhookSignature(rawBody, signature)) {

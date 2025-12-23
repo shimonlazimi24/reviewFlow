@@ -10,7 +10,7 @@ export function buildUpgradeModal(checkoutUrl: string): View {
     callback_id: 'upgrade_modal',
     title: {
       type: 'plain_text',
-      text: '🚀 Upgrade to ReviewFlow Pro'
+      text: '🚀 Upgrade to Pro' // Max 25 chars for Slack
     },
     close: {
       type: 'plain_text',
