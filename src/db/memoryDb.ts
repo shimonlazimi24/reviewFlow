@@ -32,7 +32,8 @@ export interface Workspace {
   setupChannelId?: string; // Optional private channel for setup messages (DM if not set)
   installerUserId?: string; // User who installed the app (first admin)
   setupComplete: boolean; // Whether onboarding wizard is complete
-  setupStep?: string; // Current step in onboarding: 'channel' | 'github' | 'jira' | 'members' | 'complete'
+  setupStep?: string; // Current step in onboarding: 'channel' | 'github' | 'jira' | 'teams' | 'repos' | 'members' | 'complete'
+  goLiveEnabled: boolean; // Whether PR processing is enabled (Go Live toggle)
   polarCustomerId?: string;
   polarSubscriptionId?: string;
   subscriptionStatus: 'active' | 'canceled' | 'revoked' | 'past_due' | 'incomplete' | 'unknown';
@@ -326,6 +327,7 @@ class MemoryDb implements IDatabase {
         subscriptionStatus: status,
         setupComplete: false,
         setupStep: 'channel',
+        goLiveEnabled: false,
         polarSubscriptionId: subscriptionId,
         polarCustomerId: customerId,
         currentPeriodEnd: periodEnd,
@@ -439,11 +441,17 @@ class MemoryDb implements IDatabase {
 
   // PR operations (async for compatibility with PostgreSQL)
   async findPr(workspaceId: string, repoFullName: string, number: number): Promise<PrRecord | undefined> {
+    if (!workspaceId) {
+      throw new Error('workspaceId is required');
+    }
     const key = `${workspaceId}:${repoFullName}#${number}`;
     return this.prByRepoAndNumber.get(key);
   }
 
   async upsertPr(pr: PrRecord): Promise<PrRecord> {
+    if (!pr.workspaceId) {
+      throw new Error('workspaceId is required for PR');
+    }
     const key = `${pr.workspaceId}:${pr.repoFullName}#${pr.number}`;
     this.prs.set(pr.id, pr);
     this.prByRepoAndNumber.set(key, pr);
@@ -530,10 +538,19 @@ class MemoryDb implements IDatabase {
     const assignments: Assignment[] = [];
     const pr = this.prs.get(prId);
     if (!pr) return assignments;
+    
+    if (!pr.workspaceId) {
+      throw new Error('PR must have workspaceId');
+    }
 
     for (const memberId of memberIds) {
       const member = this.members.get(memberId);
       if (!member) continue;
+      
+      // Ensure member is in same workspace
+      if (member.workspaceId !== pr.workspaceId) {
+        continue; // Skip members from different workspaces
+      }
 
       const assignment: Assignment = {
         id: `assign_${Date.now()}_${Math.random().toString(16).slice(2)}`,

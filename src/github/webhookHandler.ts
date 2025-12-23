@@ -177,7 +177,7 @@ export function githubWebhookHandlerFactory(args: { slackApp: App }) {
         });
       }
 
-      // Check if setup is complete - gate PR notifications until setup is done
+      // Check if setup is complete and Go Live is enabled - gate PR notifications
       if (!workspace.setupComplete) {
         logger.info('PR webhook received but setup not complete', {
           workspaceId: workspace.id,
@@ -185,20 +185,47 @@ export function githubWebhookHandlerFactory(args: { slackApp: App }) {
           prNumber: number
         });
         
-        // Send DM to installer/admin if available
-        if (workspace.installerUserId) {
+        // Send DM to installer/admin if available (use setup channel if configured)
+        const notificationChannel = workspace.setupChannelId || workspace.installerUserId;
+        if (notificationChannel) {
           try {
             await args.slackApp.client.chat.postMessage({
-              channel: workspace.installerUserId,
+              channel: notificationChannel,
               text: `⚠️ *ReviewFlow Setup Required*\n\nA PR was opened in \`${repoFullName}\` (#${number}), but ReviewFlow setup is not complete.\n\nPlease complete the setup wizard in the Home Tab to start receiving PR notifications.`
             });
           } catch (e) {
-            logger.error('Failed to send setup notification to installer', e);
+            logger.error('Failed to send setup notification', e);
           }
         }
         
         return res.status(200).json({ 
           message: 'PR received, but setup not complete. Admin has been notified.' 
+        });
+      }
+      
+      // Check if Go Live is enabled
+      if (!workspace.goLiveEnabled) {
+        logger.info('PR webhook received but Go Live not enabled', {
+          workspaceId: workspace.id,
+          repoFullName,
+          prNumber: number
+        });
+        
+        // Send DM to installer/admin (use setup channel if configured)
+        const notificationChannel = workspace.setupChannelId || workspace.installerUserId;
+        if (notificationChannel) {
+          try {
+            await args.slackApp.client.chat.postMessage({
+              channel: notificationChannel,
+              text: `⚠️ *ReviewFlow Not Live Yet*\n\nA PR was opened in \`${repoFullName}\` (#${number}), but PR processing is not enabled.\n\nPlease enable "Go Live" in the Home Tab setup wizard to start processing PRs.`
+            });
+          } catch (e) {
+            logger.error('Failed to send Go Live notification', e);
+          }
+        }
+        
+        return res.status(200).json({ 
+          message: 'PR received, but Go Live not enabled. Admin has been notified.' 
         });
       }
 

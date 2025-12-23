@@ -8,6 +8,7 @@ import { logger } from '../utils/logger';
 import { buildOnboardingChecklist } from './onboarding';
 import { buildOnboardingWizardHomeTab } from './onboardingWizard';
 import { isWorkspaceAdmin } from '../utils/permissions';
+import { calculateWaitingTime, formatWaitingTime } from '../utils/time';
 
 export function registerHomeTab(app: App) {
   app.event('app_home_opened', async ({ event, client }) => {
@@ -65,6 +66,22 @@ export function registerHomeTab(app: App) {
                 text: '⚠️ *ReviewFlow is not configured yet.*\n\nAsk your workspace admin to complete the setup.'
               }
             }]
+          }
+        });
+        return;
+      }
+
+      // If setup is complete but user is not admin, show simple personal queue
+      if (workspace.setupComplete && !isAdmin) {
+        const personalAssignments = await db.getAssignmentsBySlackUser(userId);
+        const openAssignments = personalAssignments.filter((a: any) => !a.completedAt);
+        
+        const blocks = await buildNonAdminHomeTab(openAssignments, workspace.id);
+        await client.views.publish({
+          user_id: userId,
+          view: {
+            type: 'home',
+            blocks
           }
         });
         return;
@@ -267,3 +284,84 @@ function getPlanEmoji(plan: SubscriptionPlan): string {
   return emojiMap[plan] || '🆓';
 }
 
+/**
+ * Build simple Home Tab for non-admin users
+ */
+export async function buildNonAdminHomeTab(assignments: any[], workspaceId: string): Promise<any[]> {
+  const blocks: any[] = [
+    {
+      type: 'header',
+      text: {
+        type: 'plain_text',
+        text: '📋 My Pending Reviews'
+      }
+    },
+    {
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text: `You have *${assignments.length}* pending review${assignments.length !== 1 ? 's' : ''}.`
+      }
+    }
+  ];
+
+  if (assignments.length === 0) {
+    blocks.push({
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text: '✅ *No pending reviews!*\n\nYou\'re all caught up. New review assignments will appear here.'
+      }
+    });
+  } else {
+    blocks.push({ type: 'divider' });
+    
+    // Show up to 10 assignments
+    const displayAssignments = assignments.slice(0, 10);
+    for (const assignment of displayAssignments) {
+      const pr = await db.getPr(assignment.prId);
+      if (pr) {
+        const waitingTime = calculateWaitingTime(assignment.createdAt);
+        blocks.push({
+          type: 'section',
+          text: {
+            type: 'mrkdwn',
+            text: `*<${pr.url}|${pr.repoFullName} #${pr.number}>*\n${pr.title}\n\n⏱️ Waiting: ${formatWaitingTime(waitingTime)}`
+          },
+          accessory: {
+            type: 'button',
+            text: {
+              type: 'plain_text',
+              text: 'View PR'
+            },
+            url: pr.url,
+            action_id: 'view_pr'
+          }
+        });
+      }
+    }
+    
+    if (assignments.length > 10) {
+      blocks.push({
+        type: 'context',
+        elements: [{
+          type: 'mrkdwn',
+          text: `... and ${assignments.length - 10} more. Use \`/cr my\` to see all.`
+        }]
+      });
+    }
+  }
+
+  blocks.push(
+    { type: 'divider' },
+    {
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text: '💡 *Tip:* Use `/cr my` to see all your pending reviews and `/cr team` to see the team queue.'
+      }
+    }
+  );
+
+  return blocks;
+}

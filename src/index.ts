@@ -124,10 +124,12 @@ async function main() {
       try {
         // Check database connection
         await db.listWorkspaces();
+        const billingEnabled = !!env.POLAR_ACCESS_TOKEN;
         res.json({ 
           status: 'healthy',
           timestamp: new Date().toISOString(),
-          database: 'connected'
+          database: 'connected',
+          billing: billingEnabled ? 'enabled' : 'disabled'
         });
       } catch (error: any) {
         res.status(503).json({

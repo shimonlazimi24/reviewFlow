@@ -16,9 +16,10 @@ import { PolarService } from '../services/polarService';
 import { buildGitHubConnectModal, buildJiraConnectModal, buildBulkMemberImportModal } from './onboarding';
 import { encrypt } from '../utils/encryption';
 import { 
+  buildSetupDestinationModal,
   buildChannelSelectionModal, 
   buildGitHubConnectionModal, 
-  buildJiraConnectionModal, 
+  buildJiraConnectionModal,
   buildAddMembersModal 
 } from './onboardingWizard';
 import { requireWorkspaceAdmin } from '../utils/permissions';
@@ -1711,7 +1712,79 @@ export function registerSlackHandlers(app: App) {
 
   // Onboarding Wizard Action Handlers
 
-  // Step A: Channel Selection
+  // Step A: Setup Destination
+  app.action('wizard_step_setup_destination', async ({ ack, body, client }) => {
+    await ack();
+    const actionBody = body as any;
+    const userId = actionBody.user?.id;
+    const slackTeamId = actionBody.team?.id || '';
+    const workspaceId = actionBody.actions?.[0]?.value;
+
+    if (!userId || !slackTeamId || !workspaceId) return;
+
+    try {
+      await requireWorkspaceAdmin(userId, slackTeamId, client);
+      const modal = buildSetupDestinationModal(workspaceId);
+      await client.views.open({
+        trigger_id: actionBody.trigger_id,
+        view: modal
+      });
+    } catch (error: any) {
+      logger.error('Error opening setup destination modal', error);
+      await client.chat.postEphemeral({
+        channel: userId,
+        user: userId,
+        text: `❌ ${error.message}`
+      });
+    }
+  });
+
+  // Setup Destination Modal Submit
+  app.view('wizard_setup_destination_submit', async ({ ack, body, client, view }) => {
+    await ack();
+    const userId = body.user.id;
+    const slackTeamId = body.team?.id || '';
+    const workspaceId = view.private_metadata;
+
+    try {
+      await requireWorkspaceAdmin(userId, slackTeamId, client);
+      
+      const setupChannel = view.state.values.setup_destination?.setup_channel?.selected_channel;
+
+      const workspace = await db.getWorkspace(workspaceId);
+      if (!workspace) {
+        throw new Error('Workspace not found');
+      }
+
+      // Update workspace
+      await db.updateWorkspace(workspaceId, {
+        setupChannelId: setupChannel || undefined,
+        setupStep: 'channel',
+        updatedAt: Date.now()
+      });
+
+      await client.chat.postEphemeral({
+        channel: userId,
+        user: userId,
+        text: `✅ Setup destination configured${setupChannel ? `: <#${setupChannel}>` : ' (DM)'}. Continue with Step A2: Select Notification Channel.`
+      });
+
+      // Refresh home tab
+      await client.views.publish({
+        user_id: userId,
+        view: { type: 'home', blocks: [] }
+      });
+    } catch (error: any) {
+      logger.error('Error saving setup destination', error);
+      await client.chat.postEphemeral({
+        channel: userId,
+        user: userId,
+        text: `❌ Failed to save setup destination: ${error.message}`
+      });
+    }
+  });
+
+  // Step A2: Channel Selection
   app.action('wizard_step_channel', async ({ ack, body, client }) => {
     await ack();
     const actionBody = body as any;
@@ -1768,7 +1841,6 @@ export function registerSlackHandlers(app: App) {
       // Update workspace
       await db.updateWorkspace(workspaceId, {
         defaultChannelId: notificationChannel,
-        setupChannelId: setupChannel || undefined,
         setupStep: 'github',
         updatedAt: Date.now()
       });
@@ -1940,7 +2012,8 @@ export function registerSlackHandlers(app: App) {
 
     try {
       await requireWorkspaceAdmin(userId, slackTeamId, client);
-      const modal = buildAddMembersModal(workspaceId);
+      const teams = await db.listTeams(workspaceId);
+      const modal = buildAddMembersModal(workspaceId, teams);
       await client.views.open({
         trigger_id: actionBody.trigger_id,
         view: modal
@@ -1956,7 +2029,7 @@ export function registerSlackHandlers(app: App) {
   });
 
   // Add Members Modal Submit
-  app.view('wizard_members_submit', async ({ ack, body, client, view }) => {
+  app.view('wizard_member_submit', async ({ ack, body, client, view }) => {
     await ack();
     const userId = body.user.id;
     const slackTeamId = body.team?.id || '';
@@ -1965,10 +2038,11 @@ export function registerSlackHandlers(app: App) {
     try {
       await requireWorkspaceAdmin(userId, slackTeamId, client);
       
-      const slackUser = view.state.values.member_1?.slack_user?.selected_user;
-      const githubUsername = view.state.values.member_1_github?.github_username?.value;
-      const role = view.state.values.member_1_role?.role?.selected_option?.value;
-      const weightStr = view.state.values.member_1_weight?.weight?.value || '1.0';
+      const slackUser = view.state.values.member_slack_user?.slack_user?.selected_user;
+      const githubUsername = view.state.values.member_github?.github_username?.value;
+      const role = view.state.values.member_role?.role?.selected_option?.value;
+      const weightStr = view.state.values.member_weight?.weight?.value || '1.0';
+      const memberTeamId = view.state.values.member_team?.team?.selected_option?.value;
 
       if (!slackUser || !githubUsername || !role) {
         await client.chat.postEphemeral({
@@ -1986,17 +2060,21 @@ export function registerSlackHandlers(app: App) {
 
       const weight = parseFloat(weightStr) || 1.0;
 
+      // Parse GitHub usernames (comma-separated)
+      const githubUsernames = githubUsername.split(',').map(u => u.trim()).filter(Boolean);
+
       // Add member
       const memberId = `member_${Date.now()}_${Math.random().toString(16).slice(2)}`;
       await db.addMember({
         id: memberId,
         workspaceId,
         slackUserId: slackUser,
-        githubUsernames: [githubUsername.trim()],
+        githubUsernames,
         roles: [role as any],
         weight,
         isActive: true,
-        isUnavailable: false
+        isUnavailable: false,
+        teamId: memberTeamId || undefined
       });
 
       await client.chat.postEphemeral({
@@ -2016,6 +2094,190 @@ export function registerSlackHandlers(app: App) {
         channel: userId,
         user: userId,
         text: `❌ Failed to add member: ${error.message}`
+      });
+    }
+  });
+
+  // Step D: Create Teams
+  app.action('wizard_step_teams', async ({ ack, body, client }) => {
+    await ack();
+    const actionBody = body as any;
+    const userId = actionBody.user?.id;
+    const slackTeamId = actionBody.team?.id || '';
+    const workspaceId = actionBody.actions?.[0]?.value;
+
+    if (!userId || !slackTeamId || !workspaceId) return;
+
+    try {
+      await requireWorkspaceAdmin(userId, slackTeamId, client);
+      // Use simple team creation via command or modal
+      await client.chat.postEphemeral({
+        channel: userId,
+        user: userId,
+        text: '💡 Use `/create-team <team-name> <channel-id>` to create a team, or use `/cr settings` to manage teams via the settings modal.'
+      });
+    } catch (error: any) {
+      logger.error('Error in wizard_step_teams', error);
+      await client.chat.postEphemeral({
+        channel: userId,
+        user: userId,
+        text: `❌ ${error.message}`
+      });
+    }
+  });
+
+  // Step E: Map Repositories
+  app.action('wizard_step_repos', async ({ ack, body, client }) => {
+    await ack();
+    const actionBody = body as any;
+    const userId = actionBody.user?.id;
+    const slackTeamId = actionBody.team?.id || '';
+    const workspaceId = actionBody.actions?.[0]?.value;
+
+    if (!userId || !slackTeamId || !workspaceId) return;
+
+    try {
+      await requireWorkspaceAdmin(userId, slackTeamId, client);
+      const teams = await db.listTeams(workspaceId);
+      if (teams.length === 0) {
+        await client.chat.postEphemeral({
+          channel: userId,
+          user: userId,
+          text: '❌ Please create a team first (Step D). Use `/create-team <team-name> <channel-id>`.'
+        });
+        return;
+      }
+      // Use settings modal for repo mapping
+      await client.chat.postEphemeral({
+        channel: userId,
+        user: userId,
+        text: '💡 Use `/cr settings` to map repositories to teams via the settings modal.'
+      });
+    } catch (error: any) {
+      logger.error('Error in wizard_step_repos', error);
+      await client.chat.postEphemeral({
+        channel: userId,
+        user: userId,
+        text: `❌ ${error.message}`
+      });
+    }
+  });
+
+  // View Teams
+  app.action('wizard_view_teams', async ({ ack, body, client }) => {
+    await ack();
+    const actionBody = body as any;
+    const userId = actionBody.user?.id;
+    const slackTeamId = actionBody.team?.id || '';
+    const workspaceId = actionBody.actions?.[0]?.value;
+
+    if (!userId || !slackTeamId || !workspaceId) return;
+
+    try {
+      await requireWorkspaceAdmin(userId, slackTeamId, client);
+      const teams = await db.listTeams(workspaceId);
+      if (teams.length === 0) {
+        await client.chat.postEphemeral({
+          channel: userId,
+          user: userId,
+          text: 'No teams created yet. Use `/create-team` to create your first team.'
+        });
+        return;
+      }
+      const teamsList = teams.map((t: any) => `• ${t.name} (ID: ${t.id})${t.slackChannelId ? ` - Channel: <#${t.slackChannelId}>` : ''}`).join('\n');
+      await client.chat.postEphemeral({
+        channel: userId,
+        user: userId,
+        text: `*Teams:*\n${teamsList}\n\nUse \`/cr settings\` to manage teams.`
+      });
+    } catch (error: any) {
+      logger.error('Error in wizard_view_teams', error);
+      await client.chat.postEphemeral({
+        channel: userId,
+        user: userId,
+        text: `❌ ${error.message}`
+      });
+    }
+  });
+
+  // View Repos
+  app.action('wizard_view_repos', async ({ ack, body, client }) => {
+    await ack();
+    const actionBody = body as any;
+    const userId = actionBody.user?.id;
+    const slackTeamId = actionBody.team?.id || '';
+    const workspaceId = actionBody.actions?.[0]?.value;
+
+    if (!userId || !slackTeamId || !workspaceId) return;
+
+    try {
+      await requireWorkspaceAdmin(userId, slackTeamId, client);
+      const repoMappings = await db.listRepoMappings(workspaceId);
+      const teams = await db.listTeams(workspaceId);
+      if (repoMappings.length === 0) {
+        await client.chat.postEphemeral({
+          channel: userId,
+          user: userId,
+          text: 'No repository mappings yet. Use `/cr settings` to map repositories to teams.'
+        });
+        return;
+      }
+      const mappingsList = repoMappings.map((rm: any) => {
+        const team = teams.find((t: any) => t.id === rm.teamId);
+        return `• \`${rm.repoFullName}\` → ${team?.name || 'Unknown Team'}`;
+      }).join('\n');
+      await client.chat.postEphemeral({
+        channel: userId,
+        user: userId,
+        text: `*Repository Mappings:*\n${mappingsList}\n\nUse \`/cr settings\` to manage mappings.`
+      });
+    } catch (error: any) {
+      logger.error('Error in wizard_view_repos', error);
+      await client.chat.postEphemeral({
+        channel: userId,
+        user: userId,
+        text: `❌ ${error.message}`
+      });
+    }
+  });
+
+  // View Members
+  app.action('wizard_view_members', async ({ ack, body, client }) => {
+    await ack();
+    const actionBody = body as any;
+    const userId = actionBody.user?.id;
+    const slackTeamId = actionBody.team?.id || '';
+    const workspaceId = actionBody.actions?.[0]?.value;
+
+    if (!userId || !slackTeamId || !workspaceId) return;
+
+    try {
+      await requireWorkspaceAdmin(userId, slackTeamId, client);
+      const members = await db.listMembers(workspaceId);
+      if (members.length === 0) {
+        await client.chat.postEphemeral({
+          channel: userId,
+          user: userId,
+          text: 'No members added yet. Use the "Add Members" button in the onboarding wizard or `/cr settings`.'
+        });
+        return;
+      }
+      const membersList = members.map((m: any) => {
+        const roles = m.roles.join(', ');
+        const github = m.githubUsernames.join(', ');
+        return `• <@${m.slackUserId}> - GitHub: \`${github}\` - Roles: ${roles}${m.teamId ? ` - Team: ${m.teamId}` : ''}`;
+      }).join('\n');
+      await client.chat.postEphemeral({
+        channel: userId,
+        user: userId,
+        text: `*Team Members:*\n${membersList}\n\nUse \`/cr settings\` to manage members.`
+      });
+    } catch (error: any) {
+      logger.error('Error in wizard_view_members', error);
+      await client.chat.postEphemeral({
+        channel: userId,
+        user: userId,
+        text: `❌ ${error.message}`
       });
     }
   });

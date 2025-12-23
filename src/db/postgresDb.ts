@@ -19,29 +19,54 @@ export class PostgresDb {
     await this.pool.query(`
       CREATE TABLE IF NOT EXISTS members (
         id VARCHAR(255) PRIMARY KEY,
-        slack_user_id VARCHAR(255) UNIQUE NOT NULL,
+        workspace_id VARCHAR(255) NOT NULL,
+        slack_user_id VARCHAR(255) NOT NULL,
         github_usernames TEXT[] NOT NULL,
         roles TEXT[] NOT NULL,
         weight DECIMAL(3,2) NOT NULL DEFAULT 1.0,
         is_active BOOLEAN NOT NULL DEFAULT true,
         is_unavailable BOOLEAN NOT NULL DEFAULT false,
+        team_id VARCHAR(255),
         created_at TIMESTAMP DEFAULT NOW(),
-        updated_at TIMESTAMP DEFAULT NOW()
+        updated_at TIMESTAMP DEFAULT NOW(),
+        UNIQUE(workspace_id, slack_user_id)
       );
       
-      -- Add is_unavailable column if it doesn't exist (for existing databases)
+      -- Migration: Add workspace_id and team_id if they don't exist
       DO $$ 
       BEGIN
+        IF NOT EXISTS (
+          SELECT 1 FROM information_schema.columns 
+          WHERE table_name = 'members' AND column_name = 'workspace_id'
+        ) THEN
+          ALTER TABLE members ADD COLUMN workspace_id VARCHAR(255);
+          ALTER TABLE members ADD COLUMN team_id VARCHAR(255);
+          -- Backfill: Set workspace_id to a default (will need manual fix for production)
+          UPDATE members SET workspace_id = 'default_workspace' WHERE workspace_id IS NULL;
+          ALTER TABLE members ALTER COLUMN workspace_id SET NOT NULL;
+        END IF;
         IF NOT EXISTS (
           SELECT 1 FROM information_schema.columns 
           WHERE table_name = 'members' AND column_name = 'is_unavailable'
         ) THEN
           ALTER TABLE members ADD COLUMN is_unavailable BOOLEAN NOT NULL DEFAULT false;
         END IF;
+        -- Drop old unique constraint if exists and add new composite unique
+        IF EXISTS (
+          SELECT 1 FROM information_schema.table_constraints 
+          WHERE table_name = 'members' AND constraint_name = 'members_slack_user_id_key'
+        ) THEN
+          ALTER TABLE members DROP CONSTRAINT members_slack_user_id_key;
+        END IF;
       END $$;
+      
+      -- Create composite unique index if it doesn't exist
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_members_workspace_slack_user 
+        ON members(workspace_id, slack_user_id);
 
       CREATE TABLE IF NOT EXISTS prs (
         id VARCHAR(255) PRIMARY KEY,
+        workspace_id VARCHAR(255) NOT NULL,
         repo_full_name VARCHAR(255) NOT NULL,
         number INTEGER NOT NULL,
         title TEXT NOT NULL,
@@ -54,13 +79,40 @@ export class PostgresDb {
         jira_issue_key VARCHAR(255),
         slack_channel_id VARCHAR(255) NOT NULL,
         slack_message_ts VARCHAR(255),
+        team_id VARCHAR(255),
         additions INTEGER,
         deletions INTEGER,
         changed_files INTEGER,
         total_changes INTEGER,
         updated_at TIMESTAMP DEFAULT NOW(),
-        UNIQUE(repo_full_name, number)
+        UNIQUE(workspace_id, repo_full_name, number)
       );
+      
+      -- Migration: Add workspace_id and team_id if they don't exist
+      DO $$ 
+      BEGIN
+        IF NOT EXISTS (
+          SELECT 1 FROM information_schema.columns 
+          WHERE table_name = 'prs' AND column_name = 'workspace_id'
+        ) THEN
+          ALTER TABLE prs ADD COLUMN workspace_id VARCHAR(255);
+          ALTER TABLE prs ADD COLUMN team_id VARCHAR(255);
+          -- Backfill: Set workspace_id to a default (will need manual fix for production)
+          UPDATE prs SET workspace_id = 'default_workspace' WHERE workspace_id IS NULL;
+          ALTER TABLE prs ALTER COLUMN workspace_id SET NOT NULL;
+          -- Drop old unique constraint if exists
+          IF EXISTS (
+            SELECT 1 FROM information_schema.table_constraints 
+            WHERE table_name = 'prs' AND constraint_name = 'prs_repo_full_name_number_key'
+          ) THEN
+            ALTER TABLE prs DROP CONSTRAINT prs_repo_full_name_number_key;
+          END IF;
+        END IF;
+      END $$;
+      
+      -- Create composite unique index
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_prs_workspace_repo_number 
+        ON prs(workspace_id, repo_full_name, number);
       
       -- Add metadata columns if they don't exist (for existing databases)
       DO $$ 
@@ -114,6 +166,7 @@ export class PostgresDb {
         installer_user_id VARCHAR(255),
         setup_complete BOOLEAN NOT NULL DEFAULT false,
         setup_step VARCHAR(50),
+        go_live_enabled BOOLEAN NOT NULL DEFAULT false,
         polar_customer_id VARCHAR(255),
         polar_subscription_id VARCHAR(255),
         subscription_status VARCHAR(20) NOT NULL DEFAULT 'active',
@@ -123,6 +176,17 @@ export class PostgresDb {
         created_at BIGINT NOT NULL,
         updated_at BIGINT NOT NULL
       );
+      
+      -- Migration: Add go_live_enabled if it doesn't exist
+      DO $$ 
+      BEGIN
+        IF NOT EXISTS (
+          SELECT 1 FROM information_schema.columns 
+          WHERE table_name = 'workspaces' AND column_name = 'go_live_enabled'
+        ) THEN
+          ALTER TABLE workspaces ADD COLUMN go_live_enabled BOOLEAN NOT NULL DEFAULT false;
+        END IF;
+      END $$;
       CREATE INDEX IF NOT EXISTS idx_workspaces_slack_team_id ON workspaces(slack_team_id);
       CREATE INDEX IF NOT EXISTS idx_workspaces_github_installation ON workspaces(github_installation_id);
 
@@ -259,10 +323,22 @@ export class PostgresDb {
     return this.rowToMember(result.rows[0]);
   }
 
-  async listMembers(): Promise<Member[]> {
-    const result = await this.pool.query('SELECT * FROM members ORDER BY created_at');
-    return result.rows.map(row => this.rowToMember(row));
+  async listMembers(workspaceId: string, teamId?: string): Promise<Member[]> {
+    if (teamId) {
+      const result = await this.pool.query(
+        'SELECT * FROM members WHERE workspace_id = $1 AND team_id = $2 ORDER BY created_at',
+        [workspaceId, teamId]
+      );
+      return result.rows.map(row => this.rowToMember(row));
+    } else {
+      const result = await this.pool.query(
+        'SELECT * FROM members WHERE workspace_id = $1 ORDER BY created_at',
+        [workspaceId]
+      );
+      return result.rows.map(row => this.rowToMember(row));
+    }
   }
+
 
   async updateMember(id: string, updates: Partial<Member>): Promise<void> {
     const fields: string[] = [];
@@ -302,10 +378,10 @@ export class PostgresDb {
   }
 
   // PR operations
-  async findPr(repoFullName: string, number: number): Promise<PrRecord | undefined> {
+  async findPr(workspaceId: string, repoFullName: string, number: number): Promise<PrRecord | undefined> {
     const result = await this.pool.query(
-      'SELECT * FROM prs WHERE repo_full_name = $1 AND number = $2',
-      [repoFullName, number]
+      'SELECT * FROM prs WHERE workspace_id = $1 AND repo_full_name = $2 AND number = $3',
+      [workspaceId, repoFullName, number]
     );
     if (result.rows.length === 0) return undefined;
     return this.rowToPr(result.rows[0]);
@@ -377,9 +453,20 @@ export class PostgresDb {
     return this.rowToPr(result.rows[0]);
   }
 
-  async listOpenPrs(): Promise<PrRecord[]> {
-    const result = await this.pool.query("SELECT * FROM prs WHERE status = 'OPEN' ORDER BY created_at DESC");
-    return result.rows.map(row => this.rowToPr(row));
+  async listOpenPrs(workspaceId: string, teamId?: string): Promise<PrRecord[]> {
+    if (teamId) {
+      const result = await this.pool.query(
+        "SELECT * FROM prs WHERE workspace_id = $1 AND team_id = $2 AND status = 'OPEN' ORDER BY created_at DESC",
+        [workspaceId, teamId]
+      );
+      return result.rows.map(row => this.rowToPr(row));
+    } else {
+      const result = await this.pool.query(
+        "SELECT * FROM prs WHERE workspace_id = $1 AND status = 'OPEN' ORDER BY created_at DESC",
+        [workspaceId]
+      );
+      return result.rows.map(row => this.rowToPr(row));
+    }
   }
 
   // Assignment operations
@@ -483,7 +570,8 @@ export class PostgresDb {
       roles: row.roles || [],
       weight: parseFloat(row.weight) || 1.0,
       isActive: row.is_active !== false,
-      isUnavailable: row.is_unavailable === true
+      isUnavailable: row.is_unavailable === true,
+      teamId: row.team_id || undefined
     };
   }
 

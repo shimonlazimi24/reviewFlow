@@ -55,15 +55,41 @@ export async function buildOnboardingWizardHomeTab(
     { type: 'divider' }
   ];
 
-  // Step A: Channel Selection
+  // Step A: Setup Destination (DM or private channel)
+  const hasSetupChannel = !!workspace.setupChannelId;
+  blocks.push({
+    type: 'section',
+    text: {
+      type: 'mrkdwn',
+      text: hasSetupChannel
+        ? `✅ *Step A: Setup Destination*\nSetup messages will go to: <#${workspace.setupChannelId}>\n\n_By default, setup messages go to your DM. You can optionally select a private channel for setup notifications._`
+        : `⏳ *Step A: Setup Destination*\nChoose where setup notifications will be sent (DM by default, or select a private channel).`
+    }
+  });
+  if (!hasSetupChannel) {
+    blocks.push({
+      type: 'actions',
+      elements: [{
+        type: 'button',
+        text: { type: 'plain_text', text: '📢 Configure Setup Channel' },
+        style: 'primary',
+        action_id: 'wizard_step_setup_destination',
+        value: workspace.id
+      }]
+    });
+  }
+
+  blocks.push({ type: 'divider' });
+
+  // Step A2: Notification Channel
   const hasChannel = !!workspace.defaultChannelId;
   blocks.push({
     type: 'section',
     text: {
       type: 'mrkdwn',
       text: hasChannel
-        ? `✅ *Step A: Notification Channel*\nChannel: <#${workspace.defaultChannelId}>`
-        : `⏳ *Step A: Notification Channel*\nSelect the channel where PR notifications will be posted.`
+        ? `✅ *Step A2: Notification Channel*\nChannel: <#${workspace.defaultChannelId}>`
+        : `⏳ *Step A2: Notification Channel*\nSelect the channel where PR notifications will be posted.`
     }
   });
   if (!hasChannel) {
@@ -133,7 +159,71 @@ export async function buildOnboardingWizardHomeTab(
 
   blocks.push({ type: 'divider' });
 
-  // Step D: Add Team Members
+  // Step D: Create Teams
+  const teams = await db.listTeams(workspace.id);
+  blocks.push({
+    type: 'section',
+    text: {
+      type: 'mrkdwn',
+      text: teams.length > 0
+        ? `✅ *Step D: Create Teams*\n${teams.length} team${teams.length > 1 ? 's' : ''} created`
+        : `⏳ *Step D: Create Teams*\nCreate teams to organize your repositories and members.`
+    }
+  });
+  blocks.push({
+    type: 'actions',
+    elements: [
+      {
+        type: 'button',
+        text: { type: 'plain_text', text: teams.length > 0 ? '➕ Create Team' : '🏢 Create Team' },
+        style: teams.length === 0 ? 'primary' : undefined,
+        action_id: 'wizard_step_teams',
+        value: workspace.id
+      },
+      ...(teams.length > 0 ? [{
+        type: 'button',
+        text: { type: 'plain_text', text: '👀 View Teams' },
+        action_id: 'wizard_view_teams',
+        value: workspace.id
+      }] : [])
+    ]
+  });
+
+  blocks.push({ type: 'divider' });
+
+  // Step E: Map Repos to Teams
+  const repoMappings = await db.listRepoMappings(workspace.id);
+  blocks.push({
+    type: 'section',
+    text: {
+      type: 'mrkdwn',
+      text: repoMappings.length > 0
+        ? `✅ *Step E: Map Repositories*\n${repoMappings.length} repositor${repoMappings.length > 1 ? 'ies' : 'y'} mapped`
+        : `⏳ *Step E: Map Repositories*\nMap your GitHub repositories to teams for better organization.`
+    }
+  });
+  blocks.push({
+    type: 'actions',
+    elements: [
+      {
+        type: 'button',
+        text: { type: 'plain_text', text: repoMappings.length > 0 ? '🗺️ Map Repository' : '🗺️ Map Repository' },
+        style: repoMappings.length === 0 ? 'primary' : undefined,
+        action_id: 'wizard_step_repos',
+        value: workspace.id
+      },
+      ...(repoMappings.length > 0 ? [{
+        type: 'button',
+        text: { type: 'plain_text', text: '👀 View Mappings' },
+        action_id: 'wizard_view_repos',
+        value: workspace.id
+      }] : [])
+    ]
+  });
+
+  blocks.push({ type: 'divider' });
+
+  // Step F: Add Team Members
   const members = await db.listMembers(workspace.id);
   const activeMembers = members.filter((m: any) => m.isActive && !m.isUnavailable);
   blocks.push({
@@ -141,8 +231,8 @@ export async function buildOnboardingWizardHomeTab(
     text: {
       type: 'mrkdwn',
       text: activeMembers.length > 0
-        ? `✅ *Step D: Add Team Members*\n${activeMembers.length} member${activeMembers.length > 1 ? 's' : ''} configured`
-        : `⏳ *Step D: Add Team Members*\nAdd your team members so ReviewFlow can assign code reviewers.`
+        ? `✅ *Step F: Add Team Members*\n${activeMembers.length} member${activeMembers.length > 1 ? 's' : ''} configured`
+        : `⏳ *Step F: Add Team Members*\nAdd your team members so ReviewFlow can assign code reviewers.`
     }
   });
   blocks.push({
@@ -166,30 +256,67 @@ export async function buildOnboardingWizardHomeTab(
 
   blocks.push({ type: 'divider' });
 
+  // Step G: Go Live
+  blocks.push({
+    type: 'section',
+    text: {
+      type: 'mrkdwn',
+      text: workspace.goLiveEnabled
+        ? `✅ *Step G: Go Live*\nPR processing is enabled! ReviewFlow will automatically assign reviewers when PRs are opened.`
+        : `⏳ *Step G: Go Live*\nEnable PR processing to start automatically assigning reviewers.`
+    }
+  });
+  if (!workspace.goLiveEnabled) {
+    blocks.push({
+      type: 'actions',
+      elements: [{
+        type: 'button',
+        text: { type: 'plain_text', text: '🚀 Go Live' },
+        style: 'primary',
+        action_id: 'wizard_step_go_live',
+        value: workspace.id
+      }]
+    });
+  }
+
+  blocks.push({ type: 'divider' });
+
   // Setup completion status
-  const setupComplete = workspace.setupComplete || (hasChannel && hasGitHub && activeMembers.length > 0);
-  if (setupComplete) {
+  const requiredStepsComplete = hasChannel && hasGitHub && teams.length > 0 && activeMembers.length > 0;
+  const setupComplete = workspace.setupComplete || requiredStepsComplete;
+  
+  if (setupComplete && !workspace.setupComplete) {
+    // Mark setup as complete (but not Go Live yet)
+    await db.updateWorkspace(workspace.id, {
+      setupComplete: true,
+      setupStep: 'complete',
+      updatedAt: Date.now()
+    });
+  }
+  
+  if (setupComplete && workspace.goLiveEnabled) {
     blocks.push({
       type: 'section',
       text: {
         type: 'mrkdwn',
-        text: '🎉 *Setup Complete!*\n\nReviewFlow is ready to use. When PRs are opened, reviewers will be automatically assigned based on your team configuration.'
+        text: '🎉 *ReviewFlow is Live!*\n\nPR processing is enabled. When PRs are opened, reviewers will be automatically assigned based on your team configuration.'
       }
     });
-    if (!workspace.setupComplete) {
-      // Mark setup as complete
-      await db.updateWorkspace(workspace.id, {
-        setupComplete: true,
-        setupStep: 'complete',
-        updatedAt: Date.now()
-      });
-    }
-  } else {
+  } else if (setupComplete) {
     blocks.push({
       type: 'section',
       text: {
         type: 'mrkdwn',
-        text: `*Progress:* ${[hasChannel, hasGitHub, activeMembers.length > 0].filter(Boolean).length}/3 required steps complete\n\nComplete all steps to start using ReviewFlow.`
+        text: '✅ *Setup Complete!*\n\nAll setup steps are complete. Enable "Go Live" to start processing PRs automatically.'
+      }
+    });
+  } else {
+    const completedSteps = [hasChannel, hasGitHub, teams.length > 0, activeMembers.length > 0].filter(Boolean).length;
+    blocks.push({
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text: `*Progress:* ${completedSteps}/4 required steps complete\n\nComplete all steps (A-G) to enable PR processing.`
       }
     });
   }
@@ -198,15 +325,15 @@ export async function buildOnboardingWizardHomeTab(
 }
 
 /**
- * Build Step A: Channel Selection Modal
+ * Build Step A: Setup Destination Modal
  */
-export function buildChannelSelectionModal(workspaceId: string): View {
+export function buildSetupDestinationModal(workspaceId: string): View {
   return {
     type: 'modal',
-    callback_id: 'wizard_channel_submit',
+    callback_id: 'wizard_setup_destination_submit',
     title: {
       type: 'plain_text',
-      text: 'Step A: Select Notification Channel'
+      text: 'Step A: Setup Destination'
     },
     submit: {
       type: 'plain_text',
@@ -222,7 +349,66 @@ export function buildChannelSelectionModal(workspaceId: string): View {
         type: 'section',
         text: {
           type: 'mrkdwn',
-          text: '*Select the channel where PR notifications will be posted.*\n\nYou can also set up a private setup channel for admin messages (optional).'
+          text: '*Choose where setup notifications will be sent.*\n\nBy default, setup messages go to your DM. You can optionally select a private channel for setup notifications.'
+        }
+      },
+      {
+        type: 'divider'
+      },
+      {
+        type: 'input',
+        block_id: 'setup_destination',
+        label: {
+          type: 'plain_text',
+          text: 'Setup Destination (Optional)'
+        },
+        element: {
+          type: 'channels_select',
+          action_id: 'setup_channel',
+          placeholder: {
+            type: 'plain_text',
+            text: 'Select a private channel (or leave empty for DM)'
+          }
+        },
+        optional: true
+      },
+      {
+        type: 'context',
+        elements: [{
+          type: 'mrkdwn',
+          text: '💡 If no channel is selected, setup messages will be sent to your DM. PR notifications will be configured in the next step.'
+        }]
+      }
+    ]
+  };
+}
+
+/**
+ * Build Step A2: Channel Selection Modal
+ */
+export function buildChannelSelectionModal(workspaceId: string): View {
+  return {
+    type: 'modal',
+    callback_id: 'wizard_channel_submit',
+    title: {
+      type: 'plain_text',
+      text: 'Step A2: Select Notification Channel'
+    },
+    submit: {
+      type: 'plain_text',
+      text: 'Continue'
+    },
+    close: {
+      type: 'plain_text',
+      text: 'Cancel'
+    },
+    private_metadata: workspaceId,
+    blocks: [
+      {
+        type: 'section',
+        text: {
+          type: 'mrkdwn',
+          text: '*Select the channel where PR notifications will be posted.*\n\nThis is where your team will see PR review assignments and updates.'
         }
       },
       {
@@ -245,27 +431,10 @@ export function buildChannelSelectionModal(workspaceId: string): View {
         }
       },
       {
-        type: 'input',
-        block_id: 'setup_channel',
-        label: {
-          type: 'plain_text',
-          text: 'Setup Channel (Optional)'
-        },
-        element: {
-          type: 'channels_select',
-          action_id: 'setup_channel',
-          placeholder: {
-            type: 'plain_text',
-            text: 'Select a private channel for setup messages (or leave empty for DM)'
-          }
-        },
-        optional: true
-      },
-      {
         type: 'context',
         elements: [{
           type: 'mrkdwn',
-          text: '💡 Setup messages will be sent to the setup channel (or DM if not set). PR notifications will go to the notification channel.'
+          text: '💡 PR notifications will be posted to this channel. Make sure the ReviewFlow bot is added to this channel.'
         }]
       }
     ]
@@ -425,7 +594,8 @@ export function buildJiraConnectionModal(workspaceId: string, isProRequired: boo
 /**
  * Build Step D: Add Members Modal
  */
-export function buildAddMembersModal(workspaceId: string): View {
+export function buildAddMembersModal(workspaceId: string, teams?: any[]): View {
+  const teamList = teams || [];
   return {
     type: 'modal',
     callback_id: 'wizard_members_submit',
@@ -455,8 +625,8 @@ export function buildAddMembersModal(workspaceId: string): View {
       },
       {
         type: 'input',
-        block_id: 'member_1',
-        label: { type: 'plain_text', text: 'Member 1' },
+        block_id: 'member_slack_user',
+        label: { type: 'plain_text', text: 'Slack User *' },
         element: {
           type: 'users_select',
           action_id: 'slack_user',
@@ -465,18 +635,22 @@ export function buildAddMembersModal(workspaceId: string): View {
       },
       {
         type: 'input',
-        block_id: 'member_1_github',
-        label: { type: 'plain_text', text: 'GitHub Username' },
+        block_id: 'member_github',
+        label: { type: 'plain_text', text: 'GitHub Username(s) *' },
         element: {
           type: 'plain_text_input',
           action_id: 'github_username',
-          placeholder: { type: 'plain_text', text: 'e.g., johndoe' }
+          placeholder: { type: 'plain_text', text: 'e.g., johndoe or johndoe,github-alt' }
+        },
+        hint: {
+          type: 'plain_text',
+          text: 'Enter one or more GitHub usernames (comma-separated)'
         }
       },
       {
         type: 'input',
-        block_id: 'member_1_role',
-        label: { type: 'plain_text', text: 'Role' },
+        block_id: 'member_role',
+        label: { type: 'plain_text', text: 'Role *' },
         element: {
           type: 'static_select',
           action_id: 'role',
@@ -490,7 +664,22 @@ export function buildAddMembersModal(workspaceId: string): View {
       },
       {
         type: 'input',
-        block_id: 'member_1_weight',
+        block_id: 'member_team',
+        label: { type: 'plain_text', text: 'Team (Optional)' },
+        element: {
+          type: 'static_select',
+          action_id: 'team',
+          options: teamList.map((team: any) => ({
+            text: { type: 'plain_text', text: team.name },
+            value: team.id
+          })),
+          placeholder: { type: 'plain_text', text: 'Select a team (optional)' }
+        },
+        optional: true
+      },
+      {
+        type: 'input',
+        block_id: 'member_weight',
         label: { type: 'plain_text', text: 'Weight (Optional)' },
         element: {
           type: 'plain_text_input',

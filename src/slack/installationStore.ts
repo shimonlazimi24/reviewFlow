@@ -39,6 +39,7 @@ export class PostgresInstallationStore {
           installerUserId: installerUserId, // Store installer as first admin
           setupComplete: false, // Setup wizard not complete
           setupStep: 'channel', // Start with channel selection
+          goLiveEnabled: false, // PR processing disabled until Go Live
           createdAt: Date.now(),
           updatedAt: Date.now()
         };

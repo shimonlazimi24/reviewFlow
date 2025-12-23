@@ -37,6 +37,7 @@ export async function loadWorkspaceContext(slackTeamId: string): Promise<Workspa
         defaultChannelId: undefined, // Will be set via settings
         setupComplete: false, // Setup wizard not complete
         setupStep: 'channel', // Start with channel selection
+        goLiveEnabled: false, // PR processing disabled until Go Live
         createdAt: Date.now(),
         updatedAt: Date.now()
       };
