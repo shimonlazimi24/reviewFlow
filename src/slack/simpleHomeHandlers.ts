@@ -71,11 +71,44 @@ export function registerSimpleHomeHandlers(app: App) {
     await ack();
     
     const actionBody = body as any;
-    const teamId = actionBody.team?.id;
+    logger.info('Start setup button clicked', { 
+      hasTeam: !!actionBody.team?.id,
+      hasTriggerId: !!actionBody.trigger_id,
+      bodyKeys: Object.keys(actionBody)
+    });
+    
+    let teamId = actionBody.team?.id;
     const triggerId = actionBody.trigger_id;
 
-    if (!teamId || !triggerId) {
-      logger.warn('Missing team ID or trigger ID for setup modal');
+    // Get team ID from auth.test() if not in body (single-workspace mode)
+    if (!teamId) {
+      try {
+        const authResult = await client.auth.test();
+        if (authResult.ok && authResult.team_id) {
+          teamId = authResult.team_id;
+        }
+      } catch (error: any) {
+        logger.error('Failed to get team ID from auth.test()', error);
+      }
+    }
+
+    if (!teamId) {
+      logger.warn('Missing team ID for setup modal');
+      return;
+    }
+
+    if (!triggerId) {
+      logger.warn('Missing trigger ID for setup modal - cannot open modal');
+      // Try to send an ephemeral message instead
+      try {
+        await client.chat.postEphemeral({
+          channel: actionBody.user?.id || '',
+          user: actionBody.user?.id || '',
+          text: '⚠️ Unable to open setup modal. Please try clicking the button again or use `/cr settings` command.'
+        });
+      } catch (err: any) {
+        logger.error('Failed to send ephemeral message', err);
+      }
       return;
     }
 
@@ -87,8 +120,20 @@ export function registerSimpleHomeHandlers(app: App) {
         trigger_id: triggerId,
         view: modal
       });
+      
+      logger.info('Setup modal opened', { teamId, userId: actionBody.user?.id });
     } catch (error: any) {
       logger.error('Error opening setup modal', error);
+      // Try to send an error message
+      try {
+        await client.chat.postEphemeral({
+          channel: actionBody.user?.id || '',
+          user: actionBody.user?.id || '',
+          text: `❌ Failed to open setup modal: ${error.message || 'Unknown error'}`
+        });
+      } catch (err: any) {
+        logger.error('Failed to send error message', err);
+      }
     }
   });
 
@@ -96,11 +141,28 @@ export function registerSimpleHomeHandlers(app: App) {
     await ack();
     
     const actionBody = body as any;
-    const teamId = actionBody.team?.id;
+    let teamId = actionBody.team?.id;
     const triggerId = actionBody.trigger_id;
 
-    if (!teamId || !triggerId) {
-      logger.warn('Missing team ID or trigger ID for edit modal');
+    // Get team ID from auth.test() if not in body (single-workspace mode)
+    if (!teamId) {
+      try {
+        const authResult = await client.auth.test();
+        if (authResult.ok && authResult.team_id) {
+          teamId = authResult.team_id;
+        }
+      } catch (error: any) {
+        logger.error('Failed to get team ID from auth.test()', error);
+      }
+    }
+
+    if (!teamId) {
+      logger.warn('Missing team ID for edit modal');
+      return;
+    }
+
+    if (!triggerId) {
+      logger.warn('Missing trigger ID for edit modal - cannot open modal');
       return;
     }
 
@@ -112,6 +174,8 @@ export function registerSimpleHomeHandlers(app: App) {
         trigger_id: triggerId,
         view: modal
       });
+      
+      logger.info('Edit settings modal opened', { teamId, userId: actionBody.user?.id });
     } catch (error: any) {
       logger.error('Error opening edit modal', error);
     }
