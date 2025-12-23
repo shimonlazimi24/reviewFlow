@@ -2040,6 +2040,22 @@ export function registerSlackHandlers(app: App) {
     const workspaceId = view.private_metadata;
 
     try {
+      // Get workspace first to check if installerUserId needs to be set
+      const workspace = await db.getWorkspace(workspaceId);
+      if (!workspace) {
+        throw new Error('Workspace not found');
+      }
+
+      // If workspace doesn't have installerUserId, set it to current user
+      if (!workspace.installerUserId) {
+        await db.updateWorkspace(workspace.id, {
+          installerUserId: userId,
+          updatedAt: Date.now()
+        });
+        logger.info('Set installerUserId for workspace', { workspaceId, userId });
+      }
+
+      // Now check admin privileges (this will pass if user is installer)
       await requireWorkspaceAdmin(userId, slackTeamId, client);
       
       const installationIdInput = view.state.values.installation_id_input?.installation_id?.value;

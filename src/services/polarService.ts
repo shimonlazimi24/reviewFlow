@@ -187,7 +187,10 @@ export class PolarService {
       const digest = hmac.update(body).digest('hex');
       const expectedSignature = `sha256=${digest}`;
 
-      // Use timing-safe comparison
+      // Use timing-safe comparison (only if signature is provided)
+      if (!signature) {
+        return false;
+      }
       return crypto.timingSafeEqual(
         Buffer.from(signature),
         Buffer.from(expectedSignature)

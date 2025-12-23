@@ -348,7 +348,8 @@ async function main() {
             }
           }
 
-          if (!polarService.verifyWebhookSignature(rawBody, signature)) {
+          // Only verify signature if it was provided
+          if (signature && !polarService.verifyWebhookSignature(rawBody, signature)) {
             logger.warn('Invalid Polar webhook signature');
             return res.status(400).json({ error: 'Invalid signature' });
           }
