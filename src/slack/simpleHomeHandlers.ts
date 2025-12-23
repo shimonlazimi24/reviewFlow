@@ -918,7 +918,25 @@ export function registerSimpleHomeHandlers(app: App) {
         }
 
         try {
-          const workspace = await getOrCreateWorkspace(teamId, userId);
+          // Helper to get or create workspace
+          let workspace = await db.getWorkspaceBySlackTeamId(teamId);
+          if (!workspace) {
+            const workspaceId = `workspace_${teamId}`;
+            workspace = {
+              id: workspaceId,
+              slackTeamId: teamId,
+              plan: 'free',
+              subscriptionStatus: 'active',
+              installerUserId: userId,
+              setupComplete: false,
+              setupStep: 'channel',
+              goLiveEnabled: false,
+              createdAt: Date.now(),
+              updatedAt: Date.now()
+            };
+            await db.addWorkspace(workspace);
+            logger.info('Created workspace for Go Live', { workspaceId, teamId });
+          }
           
           // Check prerequisites
           const settings = await db.getWorkspaceSettings(teamId);
