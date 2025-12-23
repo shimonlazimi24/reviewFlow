@@ -488,9 +488,28 @@ export function registerSimpleHomeHandlers(app: App) {
         logger.info('Created workspace for GitHub connection', { workspaceId, teamId });
       }
 
+      // Ensure workspace settings exist for consistency
+      const settings = await db.getWorkspaceSettings(teamId);
+      if (!settings) {
+        await db.upsertWorkspaceSettings({
+          slackTeamId: teamId,
+          requiredReviewers: 2,
+          reminderHours: 24,
+          reminderEscalationHours: 48,
+          createdAt: Date.now(),
+          updatedAt: Date.now()
+        });
+      }
+
       // Import and build modal (do this quickly to avoid timeout)
       const { buildGitHubConnectionModal } = await import('./onboardingWizard');
       const modal = buildGitHubConnectionModal(workspace.id);
+      
+      logger.info('Opening GitHub connection modal', { 
+        workspaceId: workspace.id, 
+        slackTeamId: workspace.slackTeamId,
+        hasTriggerId: !!triggerId 
+      });
       
       // Open modal immediately
       await client.views.open({
