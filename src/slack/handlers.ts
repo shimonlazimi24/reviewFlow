@@ -2032,6 +2032,79 @@ export function registerSlackHandlers(app: App) {
     }
   });
 
+  // GitHub Connection Modal Submit (with manual installation ID option)
+  app.view('wizard_github_submit', async ({ ack, body, client, view }) => {
+    await ack();
+    const userId = body.user.id;
+    const slackTeamId = body.team?.id || '';
+    const workspaceId = view.private_metadata;
+
+    try {
+      await requireWorkspaceAdmin(userId, slackTeamId, client);
+      
+      const installationIdInput = view.state.values.installation_id_input?.installation_id?.value;
+      
+      // If user provided installation ID manually, use it
+      if (installationIdInput && installationIdInput.trim()) {
+        const installationId = installationIdInput.trim();
+        
+        const workspace = await db.getWorkspace(workspaceId);
+        if (!workspace) {
+          throw new Error('Workspace not found');
+        }
+
+        // Update workspace with GitHub installation ID
+        await db.updateWorkspace(workspace.id, {
+          githubInstallationId: installationId,
+          updatedAt: Date.now()
+        });
+
+        // Also update workspace settings
+        const settings = await db.getWorkspaceSettings(workspace.slackTeamId);
+        if (settings) {
+          await db.upsertWorkspaceSettings({
+            ...settings,
+            githubInstallationId: installationId,
+            updatedAt: Date.now()
+          });
+        }
+
+        await client.chat.postEphemeral({
+          channel: userId,
+          user: userId,
+          text: `✅ GitHub connected successfully!\n\nInstallation ID: \`${installationId}\`\n\nYou can now continue with the setup.`
+        });
+
+        // Refresh home tab
+        const { buildConfiguredHomeTab } = await import('./simpleHomeTab');
+        const blocks = await buildConfiguredHomeTab(slackTeamId);
+        await client.views.publish({
+          user_id: userId,
+          view: {
+            type: 'home',
+            blocks
+          }
+        });
+
+        logger.info('GitHub installation manually connected', { workspaceId, installationId });
+      } else {
+        // No manual ID provided - just acknowledge (they can use the install button)
+        await client.chat.postEphemeral({
+          channel: userId,
+          user: userId,
+          text: '💡 Click the "Install GitHub App" button above to connect GitHub, or enter an Installation ID if you\'ve already installed it.'
+        });
+      }
+    } catch (error: any) {
+      logger.error('Error saving GitHub connection', error);
+      await client.chat.postEphemeral({
+        channel: userId,
+        user: userId,
+        text: `❌ Failed to connect GitHub: ${error.message}`
+      });
+    }
+  });
+
   // Jira Connection Modal Submit
   app.view('wizard_jira_submit', async ({ ack, body, client, view }) => {
     await ack();

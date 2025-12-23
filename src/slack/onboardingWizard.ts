@@ -454,14 +454,18 @@ export function buildGitHubConnectionModal(workspaceId: string): View {
 
   return {
     type: 'modal',
-    callback_id: 'wizard_github_info',
+    callback_id: 'wizard_github_submit',
     title: {
       type: 'plain_text',
-      text: 'Step B: Connect GitHub'
+      text: 'Connect GitHub'
+    },
+    submit: {
+      type: 'plain_text',
+      text: 'Connect'
     },
     close: {
       type: 'plain_text',
-      text: 'Close'
+      text: 'Cancel'
     },
     private_metadata: workspaceId,
     blocks: [
@@ -469,7 +473,7 @@ export function buildGitHubConnectionModal(workspaceId: string): View {
         type: 'section',
         text: {
           type: 'mrkdwn',
-          text: '*Connect your GitHub repositories*\n\n1. Click the button below to install the ReviewFlow GitHub App\n2. Select the repositories you want to monitor\n3. After installation, you\'ll be able to select which repos to enable'
+          text: '*Option 1: Install GitHub App (Recommended)*\n\n1. Click the button below to install the ReviewFlow GitHub App\n2. Select the repositories you want to monitor\n3. After installation, the connection will be detected automatically'
         }
       },
       {
@@ -483,20 +487,34 @@ export function buildGitHubConnectionModal(workspaceId: string): View {
         }]
       },
       {
-        type: 'section',
-        text: {
-          type: 'mrkdwn',
-          text: `*Or copy this link:*\n<${githubAppUrl}|${githubAppUrl.substring(0, 50)}...>`
-        }
-      },
-      {
         type: 'divider'
       },
       {
         type: 'section',
         text: {
           type: 'mrkdwn',
-          text: '*After installation:*\n\n• The app will automatically detect your installation\n• You can then select which repositories to enable for PR notifications'
+          text: '*Option 2: Manual Connection*\n\nIf you\'ve already installed the GitHub App, enter the Installation ID below.\n\n*How to find your Installation ID:*\n1. Go to: https://github.com/settings/installations\n2. Click on your ReviewFlow installation\n3. The Installation ID is in the URL (e.g., `/installations/100951978`)'
+        }
+      },
+      {
+        type: 'input',
+        block_id: 'installation_id_input',
+        label: {
+          type: 'plain_text',
+          text: 'GitHub Installation ID'
+        },
+        element: {
+          type: 'plain_text_input',
+          action_id: 'installation_id',
+          placeholder: {
+            type: 'plain_text',
+            text: 'e.g., 100951978'
+          }
+        },
+        optional: true,
+        hint: {
+          type: 'plain_text',
+          text: 'Only needed if automatic connection didn\'t work'
         }
       }
     ]
