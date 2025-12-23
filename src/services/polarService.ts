@@ -188,13 +188,18 @@ export class PolarService {
       const expectedSignature = `sha256=${digest}`;
 
       // Use timing-safe comparison (only if signature is provided)
-      if (!signature) {
+      if (!signature || typeof signature !== 'string') {
         return false;
       }
-      return crypto.timingSafeEqual(
-        Buffer.from(signature),
-        Buffer.from(expectedSignature)
-      );
+      try {
+        return crypto.timingSafeEqual(
+          Buffer.from(signature, 'utf8'),
+          Buffer.from(expectedSignature, 'utf8')
+        );
+      } catch (error) {
+        logger.error('Error in timing-safe comparison', error);
+        return false;
+      }
     } catch (error) {
       logger.error('Error verifying Polar webhook signature', error);
       return false;
