@@ -23,14 +23,18 @@ export function registerGitHubConnectRoutes(app: express.Express) {
       }
 
       // Get or create workspace
+      logger.info('GitHub connect route called', { workspace_id });
       let workspace = await db.getWorkspace(workspace_id as string);
+      logger.info('Workspace lookup by ID', { workspace_id, found: !!workspace });
       
       // If workspace doesn't exist, try to find it by slackTeamId (extracted from workspace_id format)
       if (!workspace) {
         // workspace_id format is usually "workspace_T0A4D4NF3RD"
         const slackTeamId = (workspace_id as string).replace(/^workspace_/, '');
+        logger.info('Workspace not found by ID, trying slackTeamId', { slackTeamId });
         if (slackTeamId && slackTeamId !== workspace_id) {
           workspace = await db.getWorkspaceBySlackTeamId(slackTeamId);
+          logger.info('Workspace lookup by slackTeamId', { slackTeamId, found: !!workspace });
         }
       }
       
@@ -38,20 +42,50 @@ export function registerGitHubConnectRoutes(app: express.Express) {
       if (!workspace) {
         const slackTeamId = (workspace_id as string).replace(/^workspace_/, '') || 'unknown';
         const workspaceId = `workspace_${slackTeamId}`;
-        workspace = {
-          id: workspaceId,
-          slackTeamId: slackTeamId,
-          plan: 'free' as const,
-          subscriptionStatus: 'active' as const,
-          setupComplete: false,
-          setupStep: 'channel',
-          goLiveEnabled: false,
-          createdAt: Date.now(),
-          updatedAt: Date.now()
-        };
-        await db.addWorkspace(workspace);
-        logger.info('Created workspace for GitHub connection', { workspaceId, slackTeamId });
+        logger.info('Creating new workspace for GitHub connection', { workspaceId, slackTeamId });
+        try {
+          workspace = {
+            id: workspaceId,
+            slackTeamId: slackTeamId,
+            plan: 'free' as const,
+            subscriptionStatus: 'active' as const,
+            setupComplete: false,
+            setupStep: 'channel',
+            goLiveEnabled: false,
+            createdAt: Date.now(),
+            updatedAt: Date.now()
+          };
+          await db.addWorkspace(workspace);
+          logger.info('Successfully created workspace for GitHub connection', { workspaceId, slackTeamId });
+        } catch (error: any) {
+          logger.error('Failed to create workspace', error, { workspaceId, slackTeamId });
+          return res.status(500).send(`
+            <html>
+              <head><title>Error</title></head>
+              <body>
+                <h1>Error Creating Workspace</h1>
+                <p>Failed to create workspace: ${error.message}</p>
+                <p>Please try again from Slack.</p>
+              </body>
+            </html>
+          `);
+        }
       }
+      
+      if (!workspace) {
+        logger.error('Workspace still not found after creation attempt', { workspace_id });
+        return res.status(500).send(`
+          <html>
+            <head><title>Error</title></head>
+            <body>
+              <h1>Workspace Error</h1>
+              <p>Unable to create or find workspace. Please try again from Slack.</p>
+            </body>
+          </html>
+        `);
+      }
+      
+      logger.info('Workspace found/created, proceeding with GitHub connection', { workspaceId: workspace.id, slackTeamId: workspace.slackTeamId });
 
       // If GitHub App ID is configured, redirect to GitHub App installation
       if (env.GITHUB_APP_ID) {
