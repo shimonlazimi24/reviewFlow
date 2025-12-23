@@ -88,8 +88,10 @@ export function registerGitHubConnectRoutes(app: express.Express) {
       logger.info('Workspace found/created, proceeding with GitHub connection', { workspaceId: workspace.id, slackTeamId: workspace.slackTeamId });
 
       // If GitHub App ID is configured, redirect to GitHub App installation
+      // Pass workspace_id as state parameter so we can link it after installation
       if (env.GITHUB_APP_ID) {
-        const installUrl = `https://github.com/apps/${env.GITHUB_APP_NAME || 'reviewflow'}/installations/new`;
+        const installUrl = `https://github.com/apps/${env.GITHUB_APP_NAME || 'reviewflow'}/installations/new?state=${workspace.id}`;
+        logger.info('Redirecting to GitHub App installation', { installUrl: installUrl.substring(0, 100) + '...', workspaceId: workspace.id });
         return res.redirect(installUrl);
       }
 

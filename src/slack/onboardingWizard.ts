@@ -445,9 +445,12 @@ export function buildChannelSelectionModal(workspaceId: string): View {
  * Build Step B: GitHub Connection Modal
  */
 export function buildGitHubConnectionModal(workspaceId: string): View {
+  // Always use the /connect/github route which handles workspace creation
   const githubAppUrl = env.GITHUB_APP_ID
-    ? `https://github.com/apps/${env.GITHUB_APP_NAME || 'reviewflow'}/installations/new`
+    ? `https://github.com/apps/${env.GITHUB_APP_NAME || 'reviewflow'}/installations/new?state=${workspaceId}`
     : `${env.APP_BASE_URL || 'http://localhost:3000'}/connect/github?workspace_id=${workspaceId}`;
+
+  logger.info('Building GitHub connection modal', { workspaceId, githubAppUrl: githubAppUrl.substring(0, 100) + '...' });
 
   return {
     type: 'modal',
@@ -478,6 +481,13 @@ export function buildGitHubConnectionModal(workspaceId: string): View {
           url: githubAppUrl,
           action_id: 'github_install_link'
         }]
+      },
+      {
+        type: 'section',
+        text: {
+          type: 'mrkdwn',
+          text: `*Or copy this link:*\n<${githubAppUrl}|${githubAppUrl.substring(0, 50)}...>`
+        }
       },
       {
         type: 'divider'
