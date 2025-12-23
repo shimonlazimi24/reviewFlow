@@ -744,7 +744,45 @@ export function registerSimpleHomeHandlers(app: App) {
         return;
       }
 
-      // Create upgrade checkout (same as working upgrade button)
+      // Check if we have trigger_id to open modal
+      const triggerId = actionBody.trigger_id;
+      
+      if (!triggerId) {
+        // Fallback to ephemeral message if no trigger_id
+        const { PolarService } = await import('../services/polarService');
+        const polar = new PolarService();
+        const checkout = await polar.createCheckoutSession({
+          slackTeamId: teamId,
+          slackUserId: userId,
+          plan: 'pro'
+        });
+
+        await client.chat.postEphemeral({
+          channel: userId,
+          user: userId,
+          text: '🚀 *Upgrade to ReviewFlow Pro*\n\nUnlock all features:\n• Unlimited teams, members, and repos\n• Jira Integration\n• Auto Balance\n• Reminders\n• Advanced Analytics',
+          blocks: [
+            {
+              type: 'actions',
+              elements: [
+                {
+                  type: 'button',
+                  text: {
+                    type: 'plain_text',
+                    text: '🚀 Upgrade to Pro'
+                  },
+                  style: 'primary',
+                  url: checkout.url,
+                  action_id: 'upgrade_to_pro'
+                }
+              ]
+            }
+          ]
+        });
+        return;
+      }
+
+      // Create checkout and open modal with feature explanation
       const { PolarService } = await import('../services/polarService');
       const polar = new PolarService();
       const checkout = await polar.createCheckoutSession({
@@ -753,28 +791,15 @@ export function registerSimpleHomeHandlers(app: App) {
         plan: 'pro'
       });
 
-      await client.chat.postEphemeral({
-        channel: userId,
-        user: userId,
-        text: '🚀 *Upgrade to ReviewFlow Pro*\n\nUnlock all features:\n• Unlimited teams, members, and repos\n• Jira Integration\n• Auto Balance\n• Reminders\n• Advanced Analytics',
-        blocks: [
-          {
-            type: 'actions',
-            elements: [
-              {
-                type: 'button',
-                text: {
-                  type: 'plain_text',
-                  text: '🚀 Upgrade to Pro'
-                },
-                style: 'primary',
-                url: checkout.url,
-                action_id: 'upgrade_to_pro'
-              }
-            ]
-          }
-        ]
+      const { buildUpgradeModal } = await import('./upgradeModal');
+      const modal = buildUpgradeModal(checkout.url);
+
+      await client.views.open({
+        trigger_id: triggerId,
+        view: modal
       });
+
+      logger.info('Upgrade modal opened', { workspaceId: workspace.id });
     } catch (error: any) {
       logger.error('Error creating upgrade link', error, {
         teamId,
